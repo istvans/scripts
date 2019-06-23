@@ -11,5 +11,5 @@ In this repo I publish a slightly improved version of this script which adds:
 
 ## build_kodi_waipu_addon_on_rpi_osmc.sh
 An automated way of building the [Waipu.tv](https://github.com/flubshi/pvr.waipu) PVR plugin for Kodi on a Raspberry Pi OSMC.
-By default it build for Kodi Leia, but another version can be specified as an argument too.
+By default it builds the addon for Kodi Leia, but another version can be specified as an argument too.
 
