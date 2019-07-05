@@ -1,0 +1,6 @@
+#!/bin/bash
+
+mode=$1
+disp=$(xrandr | grep -e " connected [^(]" | sed -e "s/\([A-Z0-9]\+\) connected.*/\1/")
+xrandr --output $disp --mode $mode
+
