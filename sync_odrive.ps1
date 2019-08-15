@@ -4,13 +4,15 @@ param(
     [String] $OdriveScript = "$HOME\.odrive-agent\bin\odrive.py",
     [String] $Python = "python",
     [String] $ErrorFile = "errors.txt",
+    [String] $ExcludePattern = $null,
+    [String] $IncludePattern = $null,
     [uint32] $JobCount = 8,
     [switch] $LiveErrorReporting,
     [switch] $JustFind
 )
 
-$multi_threaded = if ($JobCount -ne 0) {$True} else {$False}
-$mt_status = if ($multi_threaded) {"enabled"} else {"disabled"}
+$global:multi_threaded = if ($JobCount -ne 0) {$True} else {$False}
+$mt_status = if ($global:multi_threaded) {"enabled"} else {"disabled"}
 Write-Host "Multi-threaded operation is $mt_status"
 
 if (!(Test-Path "$OdrivePath" -PathType Container)) {
@@ -30,7 +32,7 @@ if ($CloudFiles.length -eq 0) {
     $CloudFiles = ls -Include *.cloud* -Path $OdrivePath -Recurse
 }
 
-$number_of_files = $CloudFiles.length
+$global:number_of_files = $CloudFiles.length
 Write-Host "Found $number_of_files cloud files to sync"
 
 if ($JustFind) {
@@ -38,27 +40,26 @@ if ($JustFind) {
     return $CloudFiles
 }
 
-function update_status([uint32]$processed_count,
+function update_status([uint32]$counter,
                        [DateTime]$start_time,
-                       [string]$fixed_width_rounded_percent,
-                       [uint32]$done_count,
-                       [uint32]$failed_count,
+                       [String]$percent_string,
+                       [uint32]$done_counter,
+                       [uint32]$failed_counter,
+                       [uint32]$excluded_counter,
                        [uint32]$total_count)
 {
-    $status_format_string = "{0}% (done: {1}, failed: {2}, total: {3}," `
-                          + " elapsed: {4}, left: {5})"
     $time_format_string = "{0:dd\:hh\:mm\:ss\,fff}"
 
     $elapsed_sec = ((Get-Date) - $start_time).TotalSeconds
     $elapsed_ts =  [timespan]::fromseconds($elapsed_sec)
     $elapsed_time = ($time_format_string -f $elapsed_ts)
 
-    if ($processed_count -ne 0) {
-        $avg_elapsed_sec_per_file = $elapsed_sec / $processed_count
+    if ($counter -ne 0) {
+        $avg_elapsed_sec_per_file = $elapsed_sec / $counter
     } else {
         $avg_elapsed_sec_per_file = [double]::PositiveInfinity
     }
-    $files_left = $total_count - $processed_count
+    $files_left = $total_count - $counter
     $left_sec = $files_left * $avg_elapsed_sec_per_file
     if ([double]::IsInfinity($left_sec)) {
         $estimated_time_left = $left_sec
@@ -67,9 +68,12 @@ function update_status([uint32]$processed_count,
         $estimated_time_left = ($time_format_string -f $estimate_ts)
     }
 
-    $status = $status_format_string -f $fixed_width_rounded_percent,
-                                       $done_count,
-                                       $failed_count,
+    $status_format_string = "{0}% (done: {1}, failed: {2}, excluded: {3}, total: {4}," `
+                          + " elapsed: {5}, left: {6})"
+    $status = $status_format_string -f $percent_string,
+                                       $done_counter,
+                                       $failed_counter,
+                                       $excluded_counter,
                                        $total_count,
                                        $elapsed_time,
                                        $estimated_time_left
@@ -77,57 +81,105 @@ function update_status([uint32]$processed_count,
     return $status, $files_left
 }
 
+$global:processed_count = 0
+$global:percent = 0
+$global:fixed_width_rounded_percent = "0.00"
+$global:failed_count = 0
+$global:done_count = 0
+$global:excluded_count = 0
+
+function update_global_state()
+{
+    $global:percent = ($global:processed_count / $global:number_of_files) * 100
+    $global:fixed_width_rounded_percent = "{0:n2}" -f $global:percent
+    $global:failed_count = $Error.Count
+    $global:done_count = $global:processed_count - $global:failed_count
+}
+
+function is_excluded([String]$file_name,
+                     [String]$exclude_pattern,
+                     [String]$include_pattern)
+{
+    if ($exclude_pattern -ne $null -and $file_name -match $exclude_pattern) {
+        $exclude = $true
+    } elseif ($include_pattern -ne $null -and -not ($file_name -match $include_pattern)) {
+        $exclude = $true
+    } else {
+        $exclude = $false
+    }
+    return $exclude
+}
+
 try {
     $Error.clear()
-    $processed_count = 0
     $jobs_started = 0
     $start_time = Get-Date
     foreach ($f in $CloudFiles) {
-        $percent = ($processed_count / $number_of_files) * 100
-        $fixed_width_rounded_percent = "{0:n2}" -f $percent
-        $failed_count = $Error.Count
-        $done_count = $processed_count - $failed_count
-        if ($done_count -lt 0) {
+        $excluded = is_excluded $f $ExcludePattern $IncludePattern
+        if ($excluded) {
+            ++$global:excluded_count
+            ++$global:processed_count
+        }
+
+        update_global_state
+
+        if ($global:done_count -lt 0) {
             # account for leftover jobs, if the script was interrupted
-            $done_count = 0
+            $global:done_count = 0
             $Error.clear()
         }
 
-        $status, $files_left = update_status $processed_count `
+        $status, $files_left = update_status $global:processed_count `
                                              $start_time `
-                                             $fixed_width_rounded_percent `
-                                             $done_count `
-                                             $failed_count `
+                                             $global:fixed_width_rounded_percent `
+                                             $global:done_count `
+                                             $global:failed_count `
+                                             $global:excluded_count `
                                              $number_of_files
         $file = $f.FullName
-        Write-Progress -Activity "Syncing $file..." -Status $status -PercentComplete $percent
+
+        if ($excluded) {
+            $message = "Excluding $file"
+        } else {
+            $message = "Syncing $file..."
+        }
+        Write-Progress -Activity $message -Status $status -PercentComplete $global:percent
+
+        if ($excluded -and ($files_left -ne $jobs_started)) {
+            continue
+        }
 
         $command = {
             param($Python, $OdriveScript, $file)
             & $Python $OdriveScript sync $file
         }
 
-        if ($multi_threaded) {
-            Start-Job $command -ArgumentList $Python, $OdriveScript, $file >$null
-            ++$jobs_started
+        if ($global:multi_threaded) {
+            if (!$excluded) {
+                Start-Job $command -ArgumentList $Python, $OdriveScript, $file >$null
+                ++$jobs_started
+            }
 
-            if ($jobs_started -eq $JobCount -or $files_left -eq 0) {
+            if (($jobs_started -eq $JobCount) -or ($files_left -eq $jobs_started)) {
                 While (Get-Job -State "Running") {
                     $match = Get-Job | Select State | Select-String "Running"
                     $running = $match.count
                     $finished_jobs = $jobs_started - $running
-                    $processed_files = $processed_count + $finished_jobs
+                    $processed_files = $global:processed_count + $finished_jobs
                     if ($processed_files -lt 0) {
                         # account for leftover jobs, if the script was interrupted
                         $processed_files = 0
                     }
                     $status, $files_left = update_status $processed_files `
                                                          $start_time `
-                                                         $fixed_width_rounded_percent `
-                                                         $done_count `
-                                                         $failed_count `
+                                                         $global:fixed_width_rounded_percent `
+                                                         $global:done_count `
+                                                         $global:failed_count `
+                                                         $global:excluded_count `
                                                          $number_of_files
-                    Write-Progress -Activity "Waiting for $running job(s) to finish..." -Status $status -PercentComplete $percent
+                    Write-Progress -Activity "Waiting for $running job(s) to finish..." `
+                                   -Status $status `
+                                   -PercentComplete $global:percent
                     Start-Sleep -Milliseconds 100
                 }
 
@@ -138,22 +190,33 @@ try {
                 }
 
                 Remove-Job *
-                $processed_count += $jobs_started
+                $global:processed_count += $jobs_started
                 $jobs_started = 0
             }
         } else {
             & $command $Python $OdriveScript $file >$null 2>&1
-            ++$processed_count;
+            ++$global:processed_count;
         }
     }
 } finally {
     try {
-        if ($multi_threaded) {
+        update_global_state
+
+        $status, $files_left = update_status $global:processed_count `
+                                             $start_time `
+                                             $global:fixed_width_rounded_percent `
+                                             $global:done_count `
+                                             $global:failed_count `
+                                             $global:excluded_count `
+                                             $number_of_files
+        Write-Host $status
+
+        if ($global:multi_threaded) {
             Write-Host "Removing finished jobs... " -NoNewLine
-            Remove-Job *
+            Remove-Job * >$null 2>&1
         }
     } finally {
-        if ($multi_threaded) {
+        if ($global:multi_threaded) {
             Write-Host "Done"
         }
 
