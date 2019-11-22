@@ -1,3 +1,8 @@
+# Sync all *.cloud files/directories in the specified `OdrivePath`.
+# TODO:
+# =====
+# - Add multiple runs thus newly added multiple levels of folders can be synced
+#   in one go.
 param(
     [Parameter(ValueFromPipeline)][System.Array] $CloudFiles,
     [String] $OdrivePath = "D:\odrive",
@@ -27,13 +32,18 @@ if ((Get-Command "$Python" -ErrorAction SilentlyContinue) -eq $null) {
     throw "Unable to find '$Python' in your PATH"
 }
 
+function find_cloud_files([String]$path)
+{
+    Write-Host "Gathering cloud files in '$path'... Please wait... " -NoNewLine
+    return ls -Include *.cloud* -Path $path -Recurse
+}
+
 if ($CloudFiles.length -eq 0) {
-    Write-Host "Gathering cloud files in '$OdrivePath'... Please wait... " -NoNewLine
-    $CloudFiles = ls -Include *.cloud* -Path $OdrivePath -Recurse
+    $CloudFiles = find_cloud_files $OdrivePath
 }
 
 $global:number_of_files = $CloudFiles.length
-Write-Host "Found $number_of_files cloud files to sync"
+Write-Host "Found $global:number_of_files cloud files to sync"
 
 if ($JustFind) {
     Write-Host "JustFind was specified, so just returning the found files"
