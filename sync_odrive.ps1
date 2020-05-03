@@ -219,6 +219,9 @@ try {
                                              $global:failed_count `
                                              $global:excluded_count `
                                              $number_of_files
+        $sleep_time_in_sec_to_workaround_rubbish_write_progress = 1
+        Start-Sleep -Seconds $sleep_time_in_sec_to_workaround_rubbish_write_progress
+        Write-Progress -Activity "Done" -Status $status -PercentComplete $global:percent
         Write-Host $status
 
         if ($global:multi_threaded) {
