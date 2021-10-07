@@ -16,7 +16,15 @@ In this repo I publish a slightly improved version of this script which adds:
 1. -narrowByClass,
 1. -narrowByFriendlyName,
 1. -force, making the default run asking for confirmation,
-1. and the ablitiy to apply the optional filters for the non-destructive, listing runs as well.
+1. and the ability to apply the optional filters for the non-destructive, listing runs as well.
 
 ### sync_odrive.ps1
 Sync all your cloud files using [odrive cli](https://docs.odrive.com/docs/odrive-cli), instead of syncing them one-by-one. File syncing is parallelised (use the `-JobCount` parameter) and there's a progress bar too.
+
+### phone_vs_cloud.ps1
+Thank you for Daiyan Yingyu for publishing the original version of the script:
+https://blog.daiyanyingyu.uk/files/MoveFromPhone.ps1
+
+This script scans a directory on a phone and checks whether every file can be found in another directory or any of its subdirectories (recursively). If a file is missing, it gets copied over to a specified directory, which may or may not be the same as where the files are looked for. The script finishes with a summary of how many files were copied from how many it found.
+
+This is handy if you have a local sync of your cloud drive and want to make sure every file is backed up before freeing up space on your device. The OneDrive android app has a feature that can remove the uploaded files, but that feature is missing on Android 11 (as listed [here](https://support.microsoft.com/en-us/office/fixes-or-workarounds-for-recent-issues-in-onedrive-36110213-f3f6-490d-8cb7-3833539def0b)). I couldn't really find any other *reliable* way to know that all the files have been indeed uploaded.
