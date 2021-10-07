@@ -4,7 +4,6 @@ param(
     [string]$cloudFolderPath,
     [string]$destinationFolderPath,
     [string]$filter='.(jpg|mp4)$',
-    [switch]$confirmDelete=$true,
     [switch]$confirmCopy=$false
 )
 
@@ -73,39 +72,23 @@ if ($items) {
                 -CurrentOperation $fileName `
                 -PercentComplete $percent
 
-            $process = $true
-            if ($fileName -match "(.*)\(0\).jpg") {
-                $originalFileName = "{0}.jpg" -f $matches[1]
-                $found_originals = @( $phoneFolder.GetFolder.items() | where { $_.Name -match $originalFileName } )
-                if ($found_originals.Length -eq 1) {
-                    $found_original = $found_originals[0].Name
-                    Write-Output "$fileName looks like a duplicate of $found_original. Skipping"
-                    $process = $false
-                } else {
-                    $process = $true
-                    Write-Output "$originalFileName matched: $found_originals"
+            $filter = "{0}*" -f $fileName
+            $found_items = @( Get-ChildItem -Path $cloudFolderPath -Filter $filter -Recurse )
+            if ($found_items.Length -eq 0) {
+                $confirmed = $true
+                if ($confirmCopy) {
+                    $confirmation = Read-Host "$fileName seems to be missing from $cloudFolderPath "`
+                                              "or any of its sub-folders. "`
+                                              "Shall we copy it to $destinationFolderPath? (y/n)"
+                    if ($confirmation -ne 'y') {
+                        $confirmed = $false
+                    }
                 }
-            }
-
-            if ($process) {
-                $filter = "{0}*" -f $fileName
-                $found_items = @( Get-ChildItem -Path $cloudFolderPath -Filter $filter -Recurse )
-                if ($found_items.Length -eq 0) {
-                    $confirmed = $true
-                    if ($confirmCopy) {
-                        $confirmation = Read-Host "$fileName seems to be missing from $cloudFolderPath "`
-                                                  "or any of its sub-folders. "`
-                                                  "Shall we copy it to $destinationFolderPath? (y/n)"
-                        if ($confirmation -ne 'y') {
-                            $confirmed = $false
-                        }
-                    }
-                    if ($confirmed) {
-                        Write-Output "Copying $fileName to $destinationFolderPath..."
-                        $destinationFolder.GetFolder.CopyHere($item)
-                        Write-Output "Copied"
-                        ++$copied
-                    }
+                if ($confirmed) {
+                    Write-Output "Copying $fileName to $destinationFolderPath..."
+                    $destinationFolder.GetFolder.CopyHere($item)
+                    Write-Output "Copied"
+                    ++$copied
                 }
             }
         }
