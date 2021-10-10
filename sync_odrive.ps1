@@ -38,6 +38,9 @@ function find_cloud_files([String]$path)
     return ls -Include *.cloud* -Path $path -Recurse
 }
 
+Write-Host "Expanding every .cloudf folder placeholder..."
+Start-Process "c:\windows\py" -ArgumentList "-3","$PSScriptRoot\open_every_cloudf.py","-d","$OdrivePath" -Wait -NoNewWindow
+
 if ($CloudFiles.length -eq 0) {
     $CloudFiles = find_cloud_files $OdrivePath
 }

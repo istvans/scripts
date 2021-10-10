@@ -30,6 +30,8 @@ In this repo I publish a slightly improved version of this script which adds:
 ### sync_odrive.ps1
 Sync all your cloud files using [odrive cli](https://docs.odrive.com/docs/odrive-cli), instead of syncing them one-by-one. File syncing is parallelised (use the `-JobCount` parameter) and there's a progress bar too.
 
+It uses `expand_every_cloudf.py` to expand every folder before it starts the syncing. This way the syncing can run once without missing any file.
+
 ### phone_vs_cloud.ps1
 Thank you for Daiyan Yingyu for publishing the original version of the script:
 https://blog.daiyanyingyu.uk/files/MoveFromPhone.ps1
