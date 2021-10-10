@@ -5,6 +5,10 @@
 ### checksum_file.py
 Print the checksum of a file, calculated using common, standard algorithms.
 
+### expand_every_cloudf.py
+Traverse a directory recursively until no cloudf placeholders left.
+(This might only work on Windows. TODO try on Linux.)
+
 ## Linux
 
 ### build_kodi_waipu_addon_on_rpi_osmc.sh
