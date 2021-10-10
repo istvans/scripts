@@ -1,5 +1,10 @@
 # scripts
 
+## Cross-platform
+
+### checksum_file.py
+Print the checksum of a file, calculated using common, standard algorithms.
+
 ## Linux
 
 ### build_kodi_waipu_addon_on_rpi_osmc.sh
