@@ -32,14 +32,15 @@ if ((Get-Command "$Python" -ErrorAction SilentlyContinue) -eq $null) {
     throw "Unable to find '$Python' in your PATH"
 }
 
+Write-Host "Expanding every .cloudf folder placeholder..."
+$arglist = "-3 $PSScriptRoot\expand_every_cloudf.py -d `"$OdrivePath`" -e `"$ExcludePattern`""
+Start-Process "C:\Windows\py" -ArgumentList $arglist -Wait -NoNewWindow
+
 function find_cloud_files([String]$path)
 {
-    Write-Host "Gathering cloud files in '$path'... Please wait... " -NoNewLine
+    Write-Host "Gathering .cloud files in '$path'... Please wait... " -NoNewLine
     return ls -Include *.cloud* -Path $path -Recurse
 }
-
-Write-Host "Expanding every .cloudf folder placeholder..."
-Start-Process "c:\windows\py" -ArgumentList "-3","$PSScriptRoot\open_every_cloudf.py","-d","$OdrivePath" -Wait -NoNewWindow
 
 if ($CloudFiles.length -eq 0) {
     $CloudFiles = find_cloud_files $OdrivePath
