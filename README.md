@@ -33,8 +33,7 @@ Sync all your cloud files using [odrive cli](https://docs.odrive.com/docs/odrive
 It uses `expand_every_cloudf.py` to expand every folder before it starts the syncing. This way the syncing can run once without missing any file.
 
 ### phone_vs_cloud.ps1
-Thank you for Daiyan Yingyu for publishing the original version of the script:
-https://blog.daiyanyingyu.uk/files/MoveFromPhone.ps1
+Thank you for Daiyan Yingyu for publishing the [original version](https://blog.daiyanyingyu.uk/files/MoveFromPhone.ps1) of the script.
 
 This script scans a directory on a phone and checks whether every file can be found in another directory or any of its subdirectories (recursively). If a file is missing, it gets copied over to a specified directory, which may or may not be the same as where the files are looked for. The script finishes with a summary of how many files were copied from how many it found.
 
