@@ -138,7 +138,7 @@ def traverse_and_open_all():
 
                 double_click(cloud_folder_full_path)
 
-                spinner = Spinner(timeout=20 * 60,  # 20 minutes
+                spinner = Spinner(timeout=10 * 60,  # 10 minutes
                                   retry_fn=lambda: double_click(cloud_folder_full_path))
                 try:
                     with spinner:
