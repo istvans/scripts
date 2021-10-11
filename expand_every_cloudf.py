@@ -15,6 +15,7 @@ import argparse
 import itertools
 import math
 import os
+import re
 import sys
 import time
 
@@ -81,7 +82,10 @@ def item_level_string(tree_level):
 def parse_args():
     """Return the parsed cli arguments."""
     parser = argparse.ArgumentParser(description="Expand .cloudf files into actual directories")
-    parser.add_argument("-d", "--directory")
+    parser.add_argument("-d", "--directory", help="The root directory where our journey begins at.")
+    parser.add_argument("-e", "--exclude-pattern",
+                        help="A regular expression which is searched in the absolute path of a cloudf file.\n"
+                             "In case of a match, the cloudf file won't get expanded.")
     args = parser.parse_args()
 
     if args.directory is None:
@@ -122,14 +126,18 @@ def traverse_and_open_all():
 
             cloud_folder_names = [filename for filename in filenames if ".cloudf" in filename]
             for cloud_folder_name in cloud_folder_names:
-                cloudf_was_found = True
-
                 depth_str = item_level_string(level + 1)
 
                 cloud_folder_full_path = os.path.join(root, cloud_folder_name)
+                if (args.exclude_pattern is not None) and re.search(args.exclude_pattern, cloud_folder_full_path):
+                    print(depth_str, f"🛑✋ NOT expanding {cloud_folder_name}! ✋🛑")
+                    continue
+                else:
+                    cloudf_was_found = True
+                    print(depth_str, f"expanding {cloud_folder_name}... ", end='')
+
                 double_click(cloud_folder_full_path)
 
-                print(depth_str, f"expanding {cloud_folder_name}... ", end='')
                 spinner = Spinner(timeout=20 * 60,  # 20 minutes
                                   retry_fn=lambda: double_click(cloud_folder_full_path))
                 try:
