@@ -61,7 +61,7 @@ if ($items) {
         $destinationFolder = $shell.Namespace($destinationFolderPath).self
 
         $count = 0;
-        $num_missing = 0;
+        $numMissing = 0;
         foreach ($item in $items) {
             $fileName = $item.Name
 
@@ -72,9 +72,9 @@ if ($items) {
                 -CurrentOperation $fileName `
                 -PercentComplete $percent
 
-            $filter = "{0}*" -f $fileName
-            $found_items = @( Get-ChildItem -Path $cloudFolderPath -Filter $filter -Recurse )
-            if ($found_items.Length -eq 0) {
+            $cloudFilter = "{0}*" -f $fileName
+            $foundItems = @( Get-ChildItem -Path $cloudFolderPath -Filter $cloudFilter -Recurse )
+            if ($foundItems.Length -eq 0) {
                 $confirmed = $true
                 if ($confirmCopy) {
                     $confirmation = Read-Host "$fileName seems to be missing from $cloudFolderPath "`
