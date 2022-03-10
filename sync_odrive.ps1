@@ -10,6 +10,7 @@ param(
     [String] $Python = "python",
     [String] $ErrorFile = "errors.txt",
     [String] $ExcludePattern = $null,
+    [String] $FolderExpandExcludePattern = $null,
     [String] $IncludePattern = $null,
     [uint32] $JobCount = 8,
     [switch] $LiveErrorReporting,
@@ -33,7 +34,7 @@ if ((Get-Command "$Python" -ErrorAction SilentlyContinue) -eq $null) {
 }
 
 Write-Host "Expanding every .cloudf folder placeholder..."
-$arglist = "-3 $PSScriptRoot\expand_every_cloudf.py -d `"$OdrivePath`" -e `"$ExcludePattern`""
+$arglist = "-3 $PSScriptRoot\expand_every_cloudf.py -d `"$OdrivePath`" -e `"$FolderExpandExcludePattern`""
 Start-Process "C:\Windows\py" -ArgumentList $arglist -Wait -NoNewWindow
 
 function find_cloud_files([String]$path)
