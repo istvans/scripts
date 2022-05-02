@@ -1,82 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Traverse a directory recursively until no cloudf placeholders left.
+"""Traverse a directory recursively until no .cloudf folder placeholder left.
 
 [odrive](https://www.odrive.com) creates placeholder files for directories and files
 stored in the cloud so they don't use any disk space unless you try to open them,
 when they are synced to the disk.
-They have the .cloud extension of files and .cloudf for folders.
+They have the .cloud extension for files and .cloudf for folders.
 
-This whole expansion costs 0 byte disk space.
+This whole expansion costs 0 byte disk space but gives you access to all your
+cloud files either directly or as a .cloud placeholder.
 
 If the emojis aren't printed properly on Windows you can try the
 [Windows Terminal](https://github.com/microsoft/terminal).
 """
 import argparse
-import itertools
-import math
+import multiprocessing as mp
 import os
 import re
 import sys
 import time
-
-
-class Spinner():
-    r"""Spinning single character progress presenter with built-in timeout and retry mechanisms.
-
-      \|/
-    -- * --
-      /|\
-    """
-
-    class TimeoutException(Exception):
-        """Raised when we are still spinning after the specified timeout."""
-        pass
-
-    def __init__(self, timeout, spin_time=0.1, retry_fn=None, retry_time=60):
-        assert isinstance(timeout, int)
-        assert timeout > 0
-        self._spinner = itertools.cycle(["-", "\\", "|", "/"])
-        self.single_spin_time = spin_time
-        self.timeout = timeout
-        self.retry_fn = retry_fn
-        self.retry_time = retry_time
-        self.retry_spins = math.ceil(self.retry_time / self.single_spin_time)
-        self.timeout_spins = math.ceil(self.timeout / self.single_spin_time)
-        self.num_spins = 0
-
-    def _raise_or_retry(self):
-        """Check how long we've been spinning so far and do what's necessary (might be nothing)."""
-        if self.num_spins != 0:
-            if self.num_spins >= self.timeout_spins:
-                approx_elapsed_sec = self.num_spins * self.single_spin_time
-                raise Spinner.TimeoutException(f"Still spinning after {self.num_spins}: "
-                                               f"~{approx_elapsed_sec}s >= {self.timeout}s")
-            elif self.retry_fn is not None and (self.num_spins % self.retry_spins) == 0:
-                self.retry_fn()
-            else:
-                pass  # normal spinning
-
-    def spin(self):
-        """Print one cycle of the spinning then wait `for_sec`"""
-        self._raise_or_retry()
-        sys.stdout.write(next(self._spinner))
-        sys.stdout.flush()
-        sys.stdout.write("\b")
-        time.sleep(self.single_spin_time)
-        self.num_spins += 1
-
-    def __enter__(self):
-        """Let's start spinning!"""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Remove the last printed spinner character."""
-        pass
-
-
-def item_level_string(tree_level):
-    """Return a string representation of the specified `tree_level` (aka depth)."""
-    return tree_level * "---"
 
 
 def parse_args():
@@ -86,6 +27,9 @@ def parse_args():
     parser.add_argument("-e", "--exclude-pattern",
                         help="A regular expression which is searched in the absolute path of a cloudf file.\n"
                              "In case of a match, the cloudf file won't get expanded.")
+    parser.add_argument("-t", "--threads", type=int, default=None,
+                        help="How many threads the script should use to expand folders.\n"
+                             "Default: number of CPU cores")
     args = parser.parse_args()
 
     if args.directory is None:
@@ -95,59 +39,78 @@ def parse_args():
     return args
 
 
-def clear_screen():
-    """Clear the command line screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-
-def double_click(file_path):
-    """Double-click the file on the `file_path`."""
+def expand(cloud_folder_full_path):
+    """Double-click on the folder on the `cloud_folder_full_path` path."""
     # TODO does this work on Linux?
-    os.startfile(file_path)
+    os.startfile(cloud_folder_full_path)
+
+
+def try_expanding(cloud_folder_full_path, sleep_between_tries=0.1, timeout=10 * 60):
+    start_time = time.time()
+    while os.path.exists(cloud_folder_full_path):
+        try:
+            expand(cloud_folder_full_path)
+            time.sleep(sleep_between_tries)
+        except FileNotFoundError:
+            pass
+
+        elapsed_time = time.time() - start_time
+        if elapsed_time > timeout:
+            return False
+    return True
+
+
+def traverse_and_expand(directory, exclude_pattern, num_threads):
+    """Open every cloudf folder until none left under the user specified `directory`."""
+    if num_threads is None:
+        num_threads = os.cpu_count()
+    print(f"using {num_threads} threads for folder expansion")
+
+    with mp.Pool(num_threads) as pool:
+        there_might_be_more = True
+        cycle_counter = 0
+        while there_might_be_more:
+            async_results = []
+
+            cycle_counter += 1
+            last_progress_msg_len = 0
+            print(f"traversing #{cycle_counter}...")
+            for (root, _, filenames) in os.walk(directory):
+                progress_msg_len = len(root)
+                print(' ' * last_progress_msg_len, end='\r')
+                print(root, end='\r')
+                last_progress_msg_len = progress_msg_len
+
+                cloud_folder_names = [filename for filename in filenames
+                                      if re.search(r"\.cloudf$", filename) is not None]
+                for cloud_folder_name in cloud_folder_names:
+                    cloud_folder_full_path = os.path.join(root, cloud_folder_name)
+
+                    if (exclude_pattern is not None) and re.search(exclude_pattern, cloud_folder_full_path):
+                        print(f"🛑✋ exclude {cloud_folder_full_path} ✋🛑")
+                        pass
+                    else:
+                        print(f"🟢👍 expand {cloud_folder_full_path} ... 👍🟢")
+                        async_result = pool.apply_async(try_expanding, args=(cloud_folder_full_path,))
+                        async_results.append((cloud_folder_full_path, async_result))
+
+            print(' ' * last_progress_msg_len, end='\r')
+            print(f"wait for the expansion threads #{cycle_counter}...")
+            for (path, async_result) in async_results:
+                print(f"fetching the result for {path}... ", end='')
+                sys.stdout.flush()
+                result = "✔" if async_result.get() else "❌"
+                print(result)
+
+            there_might_be_more = len(async_results) != 0
 
 
 def traverse_and_open_all():
-    """Open every cloudf folder and traverse recursively until none left under the user specified directory."""
+    """Parse args and then start the traversal on a single or multiple threads."""
     args = parse_args()
 
-    cloudf_was_found = True
-    round_ = 0
-    while cloudf_was_found:
-        clear_screen()
-        round_ += 1
-        print("Round", round_)
-        cloudf_was_found = False
-        for (root, _, filenames) in os.walk(args.directory):
-            path = root.split(os.sep)
-            level = len(path) - 1
+    traverse_and_expand(args.directory, args.exclude_pattern, args.threads)
 
-            depth_str = item_level_string(level)
-            print(depth_str, os.path.basename(root))
-
-            cloud_folder_names = [filename for filename in filenames if ".cloudf" in filename]
-            for cloud_folder_name in cloud_folder_names:
-                depth_str = item_level_string(level + 1)
-
-                cloud_folder_full_path = os.path.join(root, cloud_folder_name)
-                if (args.exclude_pattern is not None) and re.search(args.exclude_pattern, cloud_folder_full_path):
-                    print(depth_str, f"🛑✋ NOT expanding {cloud_folder_name}! ✋🛑")
-                    continue
-                else:
-                    cloudf_was_found = True
-                    print(depth_str, f"expanding {cloud_folder_name}... ", end='')
-
-                double_click(cloud_folder_full_path)
-
-                spinner = Spinner(timeout=10 * 60,  # 10 minutes
-                                  retry_fn=lambda: double_click(cloud_folder_full_path))
-                try:
-                    with spinner:
-                        while os.path.exists(cloud_folder_full_path):
-                            spinner.spin()
-                except Spinner.TimeoutException:
-                    print("❌")
-                else:
-                    print("✔")
     print("🎉🎉🎉 All done! 🎉🎉🎉")
 
 
