@@ -43,10 +43,22 @@ function Get-SubFolder
     return $current
 }
 
-
 $phone = Get-Phone -phoneName $phoneName
-$phoneFolder = Get-SubFolder -parent $phone -path $phoneFolderPath
+if ($phone -eq $null) {
+     throw "Can't find '$phoneName'. Have you attached the phone? Is it in 'File transfer' mode?"
+}
+if (!$(Test-Path -Path  $cloudFolderPath -PathType Container)) {
+    throw "Can't find the folder '$cloudFolderPath'."
+}
+if (!$(Test-Path -Path  $destinationFolderPath -PathType Container)) {
+    throw "Can't find the folder '$destinationFolderPath'."
+}
 
+Write-Host "Expanding every .cloudf folder placeholder..."
+$arglist = "-3 $PSScriptRoot\expand_every_cloudf.py -d `"$cloudFolderPath`""
+Start-Process "C:\Windows\py" -ArgumentList $arglist -Wait -NoNewWindow
+
+$phoneFolder = Get-SubFolder -parent $phone -path $phoneFolderPath
 $items = @( $phoneFolder.GetFolder.items() | where { $_.Name -match $filter } )
 
 $phonePath = "$phoneName\$phoneFolderPath"
@@ -62,6 +74,7 @@ if ($items) {
 
         $count = 0;
         $numMissing = 0;
+        $copied = 0;
         foreach ($item in $items) {
             $fileName = $item.Name
 
@@ -95,5 +108,5 @@ if ($items) {
         Write-Output "$copied/$totalItems item(s) were copied to $destinationFolderPath"
     }
 } else {
-    Write-Output "No files for $phonePath"
+    Write-Output "No missing files for $phonePath. All synced."
 }
