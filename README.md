@@ -15,6 +15,9 @@ Traverse a directory recursively until no cloudf placeholders left.
 An automated way of building the [Waipu.tv](https://github.com/flubshi/pvr.waipu) PVR plugin for Kodi on a Raspberry Pi OSMC.
 By default it builds the addon for Kodi Leia, but another version can be specified as an argument too.
 
+### transmission_re_add_missing_torrents.sh
+Helper script to alleviate the pain that this transmission issue causes: https://github.com/transmission/transmission/issues/83
+
 ## Windows
 
 ### removeGhosts.ps1
