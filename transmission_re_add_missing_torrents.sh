@@ -56,18 +56,22 @@ fi
 
 function re_add_torrent
 {
-    line="$1"
-    echo "$line"
-    IFS=', ' read -r -a fields <<< "$line"
-    echo "'${fields[0]}' '${fields[-1]}'"
-    id=$(echo ${fields[0]} | sed 's#*##g')
-    name="${fields[-1]}"
+    torrent_line="$1"
+    echo "$torrent_line"
+
+    if [[ $torrent_line =~ ^[[:space:]]*([[:digit:]]+).*Stopped[[:space:]]+(.+) ]]; then
+        id="${BASH_REMATCH[1]}"
+        name="${BASH_REMATCH[2]}"
+    else
+        echo "Unexpected torrent line format!" >&2 && exit 1
+    fi
     echo "id:'$id' name:'$name'"
 
     info=$($t -t $id --info)
     if [[ "$info" =~ $THE_ERROR ]]; then
-        torrent_file=$(ls $name*)
-        echo "torrent file '$torrent_file'"
+        torrent_file=$(find . -name "$name*")
+        echo "torrent file '$torrent_file' (<- empty == error!)"
+        [[ -z "$torrent_file" ]] && exit 1
 
         while IFS= read -r line;  do
             if [[ $line =~ Location:[[:space:]]+([^[:space:]].+) ]]; then
@@ -78,11 +82,11 @@ function re_add_torrent
         echo "location: '$location' (<- empty == error!)"
         [[ -z "$location" ]] && exit 1
 
-        tmp_torrent_file="$TMP_DIR/$(basename $torrent_file)"
+        tmp_torrent_file="$TMP_DIR/$(basename "$torrent_file")"
         echo "backup $torrent_file to $tmp_torrent_file..."
-        cp -f $torrent_file $tmp_torrent_file
+        cp -f "$torrent_file" "$tmp_torrent_file"
 
-        re_add_cmd="$t --add $tmp_torrent_file --download-dir $location"
+        re_add_cmd="$t --add \"$tmp_torrent_file\" --download-dir \"$location\""
         echo "TRY RE_ADD: '$re_add_cmd'"
         eval "$re_add_cmd"
 
