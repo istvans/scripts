@@ -29,7 +29,7 @@ function show_usage
  Try to remove and re-add torrents with '$THE_ERROR'.
 
  -u|--user          USER            a user with access to the transmission deamon
- -p|--password      PASSWORD        the user's passwordto access the transmission deamon
+ -p|--password      PASSWORD        the user's password to access the transmission deamon
  -t|--torrent       TORRENT_NAME    operate on a single torrent; otherwise try to re-add every missing torrent
  -h|--help                          print this help message
 
@@ -141,8 +141,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$user" ]] && exit 1
-[[ -z "$password" ]] && exit 1
+if [[ -z "$user" || -z "$password" ]]; then
+    show_usage
+    exit 1
+fi
 
 
 #=============================================================================#
