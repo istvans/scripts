@@ -35,9 +35,11 @@ Sync all your cloud files using [odrive cli](https://docs.odrive.com/docs/odrive
 
 It uses `expand_every_cloudf.py` to expand every folder before it starts the syncing. This way the syncing can run once without missing any file.
 
-### phone_vs_cloud.ps1
+### cloud_sync.ps1
 Thank you for Daiyan Yingyu for publishing the [original version](https://blog.daiyanyingyu.uk/files/MoveFromPhone.ps1) of the script.
 
 This script scans a directory on a phone and checks whether every file can be found in another directory or any of its subdirectories (recursively). If a file is missing, it gets copied over to a specified directory, which may or may not be the same as where the files are looked for. The script finishes with a summary of how many files were copied from how many it found.
 
-This is handy if you have a local sync of your cloud drive and want to make sure every file is backed up before freeing up space on your device. The OneDrive android app has a feature that can remove the uploaded files, but that feature is missing on Android 11 (as listed [here](https://support.microsoft.com/en-us/office/fixes-or-workarounds-for-recent-issues-in-onedrive-36110213-f3f6-490d-8cb7-3833539def0b)). I couldn't really find any other *reliable* way to know that all the files have been indeed uploaded.
+To make it easy to call the script you can create a little config file. This way the only parameter you need to specify is your phone's "nickname". See cloud_sync_config.example.ps1.
+
+This is handy if you have a local sync of your cloud drive and want to make sure every file is backed up before freeing up space on your device. The OneDrive android app has a feature that can remove the uploaded files, but for instance [mega](https://mega.io/) does not have it yet. I couldn't really find any other *reliable* way to know that all the files have been indeed uploaded.
