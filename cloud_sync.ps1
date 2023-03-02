@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
   Ensure all the files are uploaded from the phone to the cloud.
-  Copy any missing files to a destination folder which is expected to be a cloud
-  sync folder.
+  Attempt to copy any missing or different files to a destination folder which
+  is expected to be a cloud sync folder.
 #>
 param(
     [Parameter(Mandatory)]
@@ -12,32 +12,238 @@ param(
     [string]$destinationFolderPath="<configured>",
     [string]$filter=".(jpg|jpeg|mp4)$",
     [string]$choco="choco",
-    [string]$winmerge="WinMergeU",
+    [string]$winmerge="C:\Program Files\WinMerge\WinMergeU.exe",
     [string]$tempDir=$env:Temp,
     # See cloud_sync_config.example.ps1
     [string]$configFile="cloud_sync_config.ps1",
-    # TODO add multiprocessing [uint32]$jobCount=$(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
+    [uint32]$jobCount=$(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
     [switch]$confirmCopy=$false,
     [switch]$dryRun=$false
 )
+
+
+#==============================================================================#
+# JOBS
+#==============================================================================#
+
+$copyIfMissingJob = {
+    param(
+        $phoneFile,
+        [string]$cloudFolderPath,
+        [string]$tempDir,
+        [string]$destinationFolderPath,
+        [string]$winmerge,
+        [switch]$confirmCopy,
+        [switch]$dryRun
+    )
+
+    function GetTempFilePath
+    {
+        param($phoneFile, [string]$tempDir)
+
+        return [IO.Path]::Combine($tempDir, $phoneFile.Name)
+    }
+
+    # TODO do not copy
+    function GetShellProxy
+    {
+        if (-not $global:ShellProxy)
+        {
+            $global:ShellProxy = New-Object -Com Shell.Application
+        }
+        return $global:ShellProxy
+    }
+
+    function CreateTempFile
+    {
+        param($phoneFile, [string]$tempDir)
+
+        $shell = GetShellProxy
+        $destinationFolder = $shell.Namespace($tempDir).self
+
+        $destinationFolder.GetFolder.CopyHere($phoneFile)
+
+        $tempFilePath = GetTempFilePath $phoneFile $tempDir
+        if ([System.IO.File]::Exists($tempFilePath)) {
+            Write-Debug "Created temporary file '$tempFilePath'"
+        } else {
+            throw "Failed to create '$tempFilePath'"
+        }
+
+        return $tempFilePath
+    }
+
+    function FilesAreIdentical
+    {
+        param([string]$winmerge, $phoneFile, $cloudFile)
+
+        $arguments = "-enableexitcode -noninteractive -minimize `"$phoneFile`" `"$cloudFile`""
+        $process = Start-Process $winmerge -windowstyle Hidden -ArgumentList $arguments -PassThru -Wait
+        $comparisonResult = $process.ExitCode
+
+        enum Result {
+            Identical = 0
+            Different
+            Error
+        }
+        $enumResult = [Enum]::ToObject([Result], $comparisonResult)
+
+        $result = switch ($enumResult) {
+            Identical { $true }
+            Different { $false }
+            Error {
+                throw "Failed to compare '$phoneFile' and '$cloudFile'"
+            }
+        }
+
+        return $result
+    }
+
+    <#
+    .SYNOPSIS
+    Return a possible equivalent of the name of `$phoneFile` in the cloud when
+    "Keep file names as in the device" is disabled.
+    #>
+    function GetMegaFilename
+    {
+        param($phoneFile)
+
+        $extension = [System.IO.Path]::GetExtension($phoneFile.name)
+        $megaName = $phoneFile.ExtendedProperty("System.DateModified").ToString("yyyy-MM-dd HH.mm.ss")
+        $megaFilename = "$megaName$extension"
+        return $megaFilename
+    }
+
+    function FindCloudFile
+    {
+        param([string]$cloudFolderPath, [string]$fileName)
+        return @(Get-ChildItem -Path $cloudFolderPath -Recurse -Filter $originalFilename)[0]
+    }
+
+    function IsInCloud
+    {
+        param(
+            $phoneFile,
+            [string]$cloudFolderPath,
+            [string]$tempDir,
+            [string]$winmerge
+        )
+
+        $originalFilename = $phoneFile.name
+
+        $cloudFile = FindCloudFile $cloudFolderPath $originalFilename
+
+        if ($cloudFile -eq $null) {
+            $megaFilename = GetMegaFilename($phoneFile)
+            Write-Debug "Mega filename guess for '$originalFilename': '$megaFilename'"
+            $cloudFile = FindCloudFile $cloudFolderPath $megaFilename
+            Write-Debug "Mega filename match: $($cloudFile -ne $null)"
+        }
+
+        if ($cloudFile -eq $null) {
+            $result = $false
+        } else {
+            $extension = [System.IO.Path]::GetExtension($originalFilename)
+            Write-Debug "'$originalFilename' extension: '$extension'"
+
+            if ($extension -eq ".mp4") {
+                # These files have the exact same size on the phone and on the PC too.
+                $phoneFileSize = $phoneFile.ExtendedProperty("System.Size")
+                $cloudFileSize = $cloudFile.Length
+                Write-Debug "$($phoneFile.name) $phoneFileSize == $($cloudFile.name) $cloudFileSize"
+                if ($phoneFileSize -eq $cloudFileSize) {
+                    $result = $true
+                } else {
+                    $result = $false
+                }
+            } else {
+                # These files can have different size or modified date on the phone and on the PC.
+                # So we do a proper comparison using winmerge.
+
+                $tempFile = CreateTempFile $phoneFile $tempDir
+                $result = FilesAreIdentical $winmerge $tempFile $cloudFile
+            }
+        }
+
+        return $result
+    }
+
+    function CopyIfMissing
+    {
+        param(
+            $phoneFile,
+            [string]$cloudFolderPath,
+            [string]$tempDir,
+            [string]$destinationFolderPath,
+            [string]$winmerge,
+            [switch]$confirmCopy,
+            [switch]$dryRun
+        )
+
+        if (IsInCloud $phoneFile $cloudFolderPath $tempDir $winmerge) {
+            $copied = $false
+        } else {
+            $fileName = $phoneFile.Name
+
+            if ($dryRun) {
+                Write-Output "Would try to copy $fileName to $destinationFolderPath"
+                $copied = $true
+            } else {
+                $confirmed = $true
+                if ($confirmCopy) {
+                    $confirmation = Read-Host "$fileName seems to be missing from $cloudFolderPath"`
+                                              " or any of its sub-folders."`
+                                              " Shall we copy it to $destinationFolderPath? (y/n)"
+                    if ($confirmation -ne 'y') {
+                        $confirmed = $false
+                    }
+                }
+                if ($confirmed) {
+                    # re-use the temporary file if it was created for the comparison
+                    $tempFilePath = GetTempFilePath $phoneFile $tempDir
+                    if ([System.IO.File]::Exists($tempFilePath)) {
+                        $shell = GetShellProxy
+                        $tempFile = $shell.Namespace($tempFilePath).self
+                        $fileToCopy = $tempFile
+                    } else {
+                        $fileToCopy = $phoneFile
+                    }
+
+                    Write-Output "Copying $fileName to $destinationFolderPath..."
+                    $shell = GetShellProxy
+                    $destinationFolder = $shell.Namespace($destinationFolderPath).self
+                    $destinationFolder.GetFolder.CopyHere($fileToCopy)
+                    $copied = $true
+                } else {
+                    $copied = $false
+                }
+            }
+        }
+
+        return $copied
+    }
+
+    CopyIfMissing $phoneFile $cloudFolderPath $tempDir $destinationFolderPath $winmerge $confirmCopy $dryRun
+}
+
 
 #==============================================================================#
 # FUNCTIONS
 #==============================================================================#
 
-function Get-ShellProxy
+function GetShellProxy
 {
     if (-not $global:ShellProxy)
     {
-        $global:ShellProxy = new-object -com Shell.Application
+        $global:ShellProxy = New-Object -Com Shell.Application
     }
     $global:ShellProxy
 }
 
-function Get-Phone
+function GetPhone
 {
     param($phoneName)
-    $shell = Get-ShellProxy
+    $shell = GetShellProxy
     # 17 (0x11) = ssfDRIVES from the ShellSpecialFolderConstants (https://msdn.microsoft.com/en-us/library/windows/desktop/bb774096(v=vs.85).aspx)
     # => "My Computer" â€” the virtual folder that contains everything on the local computer: storage devices, printers, and Control Panel.
     # This folder can also contain mapped network drives.
@@ -46,7 +252,7 @@ function Get-Phone
     return $phone
 }
 
-function Get-SubFolder
+function GetPhoneSubFolder
 {
     param($parent,[string]$path)
     $pathParts = @( $path.Split([system.io.path]::DirectorySeparatorChar) )
@@ -59,21 +265,6 @@ function Get-SubFolder
         }
     }
     return $current
-}
-
-<#
-.SYNOPSIS
-Return a possible equivalent of the name of `$phoneFile` in the cloud when
-"Keep file names as in the device" is disabled.
-#>
-function GetMegaFilename
-{
-    param($phoneFile)
-
-    $extension = [System.IO.Path]::GetExtension($phoneFile.name)
-    $megaName = $phoneFile.ExtendedProperty("System.DateModified").ToString("yyyy-MM-dd HH.mm.ss")
-    $megaFilename = "$megaName$extension"
-    return $megaFilename
 }
 
 function EnsureChocoIsInstalled
@@ -129,100 +320,11 @@ function EnsurePrerequisites
 
 function ClearTempDirectory
 {
-    param($tempDir, $filter)
+    param([string]$tempDir, $filter)
 
     Write-Output "Cleaning '$tempDir'..."
     Get-ChildItem -Path $tempDir -File | where { $_.Name -match $filter } | foreach { $_.Delete()}
     Write-Output "Done"
-}
-
-function GetTempFileName
-{
-    param($phoneFile, $tempDir)
-
-    return [IO.Path]::Combine($tempDir, $phoneFile.Name)
-}
-
-function CreateTempFile
-{
-    param($phoneFile, $tempDir)
-
-    $shell = Get-ShellProxy
-    $destinationFolder = $shell.Namespace($tempDir).self
-
-    $tempFile = GetTempFileName $phoneFile $tempDir
-    $destinationFolder.GetFolder.CopyHere($phoneFile)
-    Write-Debug "Created temporary file '$tempFile'"
-
-    return $tempFile
-}
-
-function FilesAreIdentical
-{
-    param([string]$winmerge, $phoneFile, $cloudFile)
-
-    $arguments = "-enableexitcode -noninteractive -minimize `"$phoneFile`" `"$cloudFile`""
-    $process = Start-Process $winmerge -windowstyle Hidden -ArgumentList $arguments -PassThru -Wait
-    $comparisonResult = $process.ExitCode
-
-    enum Result {
-        Identical = 0
-        Different
-        Error
-    }
-    $enumResult = [Enum]::ToObject([Result], $comparisonResult)
-
-    $result = switch ($enumResult) {
-        Identical { $true }
-        Different { $false }
-        Error {
-            throw "Failed to compare '$phoneFile' and '$cloudFile'"
-        }
-    }
-
-    return $result
-}
-
-function IsInCloud
-{
-    param($phoneFile, $cloudFiles, $tempDir)
-
-    $originalFilename = $phoneFile.name
-    $cloudFile = $cloudFiles[$originalFilename]
-
-    if ($cloudFile -eq $null) {
-        $megaFilename = GetMegaFilename($phoneFile)
-        Write-Debug "Mega filename guess for '$originalFilename': '$megaFilename'"
-        $cloudFile = $cloudFiles[$megaFilename]
-        Write-Debug "Mega filename match: $($cloudFile -ne $null)"
-    }
-
-    if ($cloudFile -eq $null) {
-        $result = $false
-    } else {
-        $extension = [System.IO.Path]::GetExtension($originalFilename)
-        Write-Debug "'$originalFilename' extension: '$extension'"
-
-        if ($extension -eq ".mp4") {
-            # These files have the exact same size on the phone and on the PC too.
-            $phoneFileSize = $phoneFile.ExtendedProperty("System.Size")
-            $cloudFileSize = $cloudFile.Length
-            Write-Debug "$($phoneFile.name) $phoneFileSize == $($cloudFile.name) $cloudFileSize"
-            if ($phoneFileSize -eq $cloudFileSize) {
-                $result = $true
-            } else {
-                $result = $false
-            }
-        } else {
-            # These files can have different size or modified date on the phone and on the PC.
-            # So we do a proper comparison using winmerge.
-
-            $tempFile = CreateTempFile $phoneFile $tempDir
-            $result = FilesAreIdentical $winmerge $tempFile $cloudFile
-        }
-    }
-
-    return $result
 }
 
 function CacheCloudFiles
@@ -250,9 +352,46 @@ function GetConfig
     return $config
 }
 
+function WaitForJobsToFinish
+{
+    param($jobsStarted, $jobCount, $filesLeft, $processedCount, $phoneFileCount, $filePercent)
+
+    if (($jobsStarted -eq $jobCount) -or ($filesLeft -eq $jobsStarted)) {
+        while (Get-Job -State "Running") {
+            $match = Get-Job | Select State | Select-String "Running"
+            $running = $match.count
+            $stillRunningJobsRatio = $running / $jobsStarted
+            $jobPercent = [int]((1.0 - $stillRunningJobsRatio) * 100)
+
+            Write-Progress -Activity "Waiting for $running/$jobsStarted job(s) to finish..." `
+                           -Status "Processing files $processedCount / $phoneFileCount (${filePercent}%)" `
+                           -PercentComplete $jobPercent
+            Start-Sleep -Milliseconds 100
+        }
+
+        $copied = 0
+        foreach ($job in Get-Job) {
+            $wasCopied = Receive-Job -Job $job
+            if ($wasCopied) {
+                ++$copied
+            }
+        }
+
+        Remove-Job *
+    } else {
+        $copied = 0
+    }
+
+    return $copied
+}
+
 #==============================================================================#
 # MAIN
 #==============================================================================#
+
+if ($jobCount -eq 0) {
+    throw "jobCount must be at least 1"
+}
 
 EnsurePrerequisites $choco $winmerge
 
@@ -278,7 +417,7 @@ if ($phoneFolderPath -eq "<configured>") {
     $phoneFolderPath = $phoneInfo.folder
 }
 
-$phone = Get-Phone -phoneName $phoneName
+$phone = GetPhone $phoneName
 if ($phone -eq $null) {
      throw "Can't find '$phoneName'. Have you attached the phone? Is it in 'File transfer' mode?"
 }
@@ -289,9 +428,7 @@ if (!$(Test-Path -Path  $destinationFolderPath -PathType Container)) {
     throw "Can't find the folder '$destinationFolderPath'."
 }
 
-# TODO add multiprocessing Write-Output "Running on $jobCount threads..."
-
-$phoneFolder = Get-SubFolder $phone $phoneFolderPath
+$phoneFolder = GetPhoneSubFolder $phone $phoneFolderPath
 Write-Output "Looking for files under '$phoneFolderPath' that match '$filter'..."
 $phoneFiles = @( $phoneFolder.GetFolder.items() | where { $_.Name -match $filter } )
 $phoneFileCount = $phoneFiles.Count
@@ -304,48 +441,53 @@ if ($phoneFileCount -gt 0) {
     $action = if ($dryRun) {"NOT copy (dry-run)"} else {"copy"}
     Write-Output "Will $action missing files to: $destinationFolderPath"
 
-    $shell = Get-ShellProxy
-    $destinationFolder = $shell.Namespace($destinationFolderPath).self
-
-    Write-Output "Looking for files under '$cloudFolderPath' that match '$filter'..."
-    $cloudFiles = CacheCloudFiles $cloudFolderPath $filter
-    Write-Output "Found $($cloudFiles.Count) file(s) in the cloud"
+    # Write-Output "Looking for files under '$cloudFolderPath' that match '$filter'..."
+    # $cloudFiles = CacheCloudFiles $cloudFolderPath $filter
+    # Write-Output "Found $($cloudFiles.Count) file(s) in the cloud"
 
     ClearTempDirectory $tempDir $filter  # this helps re-runs
 
-    $processedCount = 0;
-    $copied = 0;
+    Write-Output "Remove any leftover job..."
+    Remove-Job -Force *
+
+    if ($jobCount -eq 1) {
+        Write-Output "Running on a single thread..."
+    } else {
+        Write-Output "Running on $jobCount threads..."
+    }
+
+    $processedCount = 0
+    $copied = 0
+    $jobsStarted = 0
+    $filesLeft = $phoneFileCount
     foreach ($phoneFile in $phoneFiles) {
         $fileName = $phoneFile.Name
 
         ++$processedCount
         $percent = [int](($processedCount * 100) / $phoneFileCount)
-        Write-Progress -Activity "Processing Files in $phonePath" `
-            -Status "Processing File ${count} / ${totalItems} (${percent}%)" `
+        Write-Progress -Activity "Processing files under $phonePath" `
+            -Status "Processing file $processedCount / $phoneFileCount (${percent}% copied:$copied)" `
             -CurrentOperation $fileName `
             -PercentComplete $percent
 
-        if (!(IsInCloud $phoneFile $cloudFiles $tempDir)) {
-            if ($dryRun) {
-                Write-Output "Would try to copy $fileName to $destinationFolderPath"
+        --$filesLeft
+
+        $arguments = $phoneFile, $cloudFolderPath, $tempDir, $destinationFolderPath, $winmerge, $confirmCopy, $dryRun
+        if ($jobCount -eq 1) {
+            $wasCopied = Invoke-Command -ScriptBlock $copyIfMissingJob -ArgumentList $arguments
+            if ($wasCopied) {
                 ++$copied
-            } else {
-                $confirmed = $true
-                if ($confirmCopy) {
-                    $confirmation = Read-Host "$fileName seems to be missing from $cloudFolderPath"`
-                                              " or any of its sub-folders."`
-                                              " Shall we copy it to $destinationFolderPath? (y/n)"
-                    if ($confirmation -ne 'y') {
-                        $confirmed = $false
-                    }
-                }
-                if ($confirmed) {
-                    # TODO re-use the temporary files, if they exist, with GetTempFileName
-                    Write-Output "Copying $fileName to $destinationFolderPath..."
-                    $destinationFolder.GetFolder.CopyHere($phoneFile)
-                    ++$copied
-                }
             }
+        } else {
+            Start-Job $copyIfMissingJob -ArgumentList $arguments >$null
+            ++$jobsStarted
+
+            $copied += WaitForJobsToFinish $jobsStarted $jobCount $filesLeft $processedCount $phoneFileCount $percent
+        }
+
+        if ($processedCount -eq 4) {
+            Write-Debug "DEBUG EXIT NOW"
+            exit 42
         }
     }
 
