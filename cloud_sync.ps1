@@ -28,6 +28,7 @@ param(
 
 $copyIfMissingJob = {
     param(
+        $phoneFolder,
         [string]$phonePath,
         $phoneFile,
         [string]$cloudFolderPath,
@@ -57,9 +58,14 @@ $copyIfMissingJob = {
         $BINARY_SAME = 1
         $RULES_BASED_SAME = 2
         $SIMILAR = 12
+        $ERROR_CODE = 100
 
         $result = switch ($comparisonResult) {
             {$_ -in $BINARY_SAME, $RULES_BASED_SAME, $SIMILAR} {
+                $true
+            }
+            {$_ -eq $ERROR_CODE} {
+                Write-Error "$beyondCompare $arguments return code: $comparisonResult"
                 $true
             }
             default {
@@ -90,10 +96,12 @@ $copyIfMissingJob = {
     #>
     function GetMegaFilename
     {
-        param($phoneFile)
+        param($phoneFolder, $phoneFile)
 
         $extension = [System.IO.Path]::GetExtension($phoneFile.name)
-        $megaName = GetExtendedProperty($phoneFile, "System.DateModified").ToString("yyyy-MM-dd HH.mm.ss")
+        # Wait-Debugger
+        $dateModified = GetExtendedProperty $phoneFile "System.DateModified"
+        $megaName = $dateModified.ToString("yyyy-MM-dd HH.mm.ss")
         $megaFilename = "$megaName$extension"
         return $megaFilename
     }
@@ -107,6 +115,7 @@ $copyIfMissingJob = {
     function IsInCloud
     {
         param(
+            $phoneFolder,
             [string]$phonePath,
             $phoneFile,
             [string]$cloudFolderPath,
@@ -118,7 +127,7 @@ $copyIfMissingJob = {
         $cloudFile = FindCloudFile $cloudFolderPath $originalFilename
 
         if ($cloudFile -eq $null) {
-            $megaFilename = GetMegaFilename($phoneFile)
+            $megaFilename = GetMegaFilename $phoneFolder $phoneFile
             Write-Debug "Mega filename guess for '$originalFilename': '$megaFilename'"
             $cloudFile = FindCloudFile $cloudFolderPath $megaFilename
             Write-Debug "Mega filename match: $($cloudFile -ne $null)"
@@ -132,7 +141,7 @@ $copyIfMissingJob = {
 
             if ($extension -eq ".mp4") {
                 # These files have the exact same size both on the phone and on the PC.
-                $phoneFileSize = GetExtendedProperty($phoneFile, "System.Size")
+                $phoneFileSize = GetExtendedProperty $phoneFile "System.Size"
                 $cloudFileSize = $cloudFile.Length
                 Write-Debug "$($phoneFile.name) $phoneFileSize == $($cloudFile.name) $cloudFileSize"
                 if ($phoneFileSize -eq $cloudFileSize) {
@@ -178,6 +187,7 @@ $copyIfMissingJob = {
     function CopyIfMissing
     {
         param(
+            $phoneFolder,
             [string]$phonePath,
             $phoneFile,
             [string]$cloudFolderPath,
@@ -187,7 +197,8 @@ $copyIfMissingJob = {
             [bool]$dryRun
         )
 
-        if (IsInCloud $phonePath $phoneFile $cloudFolderPath $beyondCompare) {
+        Wait-Debugger
+        if (IsInCloud $phoneFolder $phonePath $phoneFile $cloudFolderPath $beyondCompare) {
             $copied = $false
         } else {
             $fileName = $phoneFile.Name
@@ -222,7 +233,7 @@ $copyIfMissingJob = {
         return $copied
     }
 
-    CopyIfMissing $phonePath $phoneFile $cloudFolderPath $destinationFolderPath $beyondCompare $confirmCopy $dryRun
+    CopyIfMissing $phoneFolder $phonePath $phoneFile $cloudFolderPath $destinationFolderPath $beyondCompare $confirmCopy $dryRun
 }
 
 
@@ -378,12 +389,20 @@ if ($phoneFileCount -gt 0) {
         Write-Output "Running on $jobCount threads..."
     }
 
+    # TODO try new architecture:
+    # start the $jobCount threads and keep them running until all the files were processed
+    # have a queue in each thread
+    # add the files to the queue of one thread, then the next one, the next one,... and so on
+
     $processedCount = 0
     $copied = 0
     $jobsStarted = 0
     $filesLeft = $phoneFileCount
     foreach ($phoneFile in $phoneFiles) {
         $fileName = $phoneFile.Name
+        if (-not ($fileName -in "IMG_20230308_201133.jpg", "IMG_20211114_161827.jpg", "VID_20221119_122834.mp4", "VID_20220818_122932.mp4", "VID_20220210_192146.mp4", "VID_20230106_162651.mp4", "VID_20220729_102843.mp4", "VID_20220302_175607.mp4")) {
+            continue
+        }
 
         ++$processedCount
         $percent = [int](($processedCount * 100) / $phoneFileCount)
@@ -394,7 +413,7 @@ if ($phoneFileCount -gt 0) {
 
         --$filesLeft
 
-        $arguments = $phonePath, $phoneFile, $cloudFolderPath, $destinationFolderPath, $beyondCompare, $confirmCopy, $dryRun
+        $arguments = $phoneFolder, $phonePath, $phoneFile, $cloudFolderPath, $destinationFolderPath, $beyondCompare, $confirmCopy, $dryRun
         if ($jobCount -eq 1) {
             $wasCopied = Invoke-Command -ScriptBlock $copyIfMissingJob -ArgumentList $arguments
             if ($wasCopied) {
@@ -406,7 +425,7 @@ if ($phoneFileCount -gt 0) {
 
             # $beyondCompare doesn't seem to like to start multiple instances
             # all at once?
-            Start-Sleep -MilliSeconds 100
+            Start-Sleep -MilliSeconds 200
 
             $newlyCopied, $jobsStarted = WaitForJobsToFinish $jobsStarted $jobCount $filesLeft `
                 $processedCount $phoneFileCount $percent
