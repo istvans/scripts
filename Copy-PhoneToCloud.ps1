@@ -73,6 +73,44 @@ function Get-Config {
 }
 
 
+function Get-TotalProcessedAndCopied {
+    param($StatusArray)
+
+    $totalProcessed = $StatusArray | ForEach-Object { $_.PhoneFileProcessed } | Measure-Object -Sum | ForEach-Object Sum
+    $totalCopied = $StatusArray | ForEach-Object { $_.PhoneFileCopied } | Measure-Object -Sum | ForEach-Object Sum
+    $totalProcessed, $totalCopied
+}
+
+
+function Write-AllProgress {
+    param($StatusArray, [Int]$Goal)
+
+    $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $StatusArray
+
+    $parentProgressId = 0
+    $percent = [int]($totalProcessed * 100 / $Goal)
+    Write-Progress -Id $parentProgressId -Activity "Total:" `
+        -Status "Copied: $totalCopied Processed: $totalProcessed/$Goal" `
+        -PercentComplete $percent
+
+    if ($percent -eq 10) {
+        throw "Copied: $totalCopied Processed: $totalProcessed/$Goal"
+    }
+
+    for ($threadId = 0; $threadId -lt $StatusArray.Length; ++$threadId) {
+        $runspaceStatus = $StatusArray[$threadId]
+        $processed = $runspaceStatus.PhoneFileProcessed
+        $copied = $runspaceStatus.PhoneFileCopied
+        $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
+        $threadPercent = [int]($processed * 100 / $Goal)  # will never reach 100, but that's fine
+        Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
+            -Activity "Thread${threadProgressId}:" `
+            -Status "Copied: $copied Processed: $processed/$Goal" `
+            -PercentComplete $threadPercent
+    }
+}
+
+
 #==============================================================================#
 # Threading
 #==============================================================================#
@@ -85,18 +123,11 @@ $thread = {
         $BeyondCompare,
         $ConfirmCopy,
         $DryRun,
-
-        # An Input queue of work to do
         $InputQueue,
-
         $OutputQueue,
-
-        # State tracking, to help threads communicate
-        # how much progress they've made
         $StatusArray,
         $ThreadId,
-
-        $ShouldRun)
+        $KeepOnRunning)
 
     function Get-MtpPath {
         param([string]$PhonePath, [string]$FileName)
@@ -326,14 +357,14 @@ $thread = {
             $StatusArray,
             $ThreadId,
 
-            $ShouldRun
+            $KeepOnRunning
         )
 
         # Continually try to fetch work from the input queue, until the Stop message arrives.
         $processed = 0
         $copied = 0
         $phoneFile = $null
-        while ($ShouldRun.Value) {
+        while ($KeepOnRunning.Value) {
             if ($InputQueue.TryDequeue([ref]$phoneFile)) {
                 if ($phoneFile -eq $null) {
                     $status = "Processed a NULL phoneFile on thread $ThreadId..."
@@ -372,18 +403,11 @@ $thread = {
         $BeyondCompare,
         $ConfirmCopy,
         $DryRun,
-
-        # An Input queue of work to do
         $InputQueue,
-
         $OutputQueue,
-
-        # State tracking, to help threads communicate
-        # how much progress they've made
         $StatusArray,
         $ThreadId,
-
-        $ShouldRun
+        $KeepOnRunning
     )
 
     Invoke-ThreadTop @arguments
@@ -470,15 +494,15 @@ if ($phoneFileCount -gt 0) {
     }
 
     $runspaces = 1..$ThreadCount | Foreach-Object { [PowerShell]::Create() }
-    $runspaceStatus = 1..$ThreadCount | Foreach-Object { [RunspaceStatus]::new() }
+    $runspaceStatuses = 1..$ThreadCount | Foreach-Object { [RunspaceStatus]::new() }
     $inputQueue = New-Object -TypeName "System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]"
-    $outputQueue = New-Object -TypeName "System.Collections.Concurrent.ConcurrentQueue[String]"
+    $debugOutputQueue = New-Object -TypeName "System.Collections.Concurrent.ConcurrentQueue[String]"
 
     # disable ctrl + c so we can handle it manually
     [Console]::TreatControlCAsInput = $true
 
     Write-Output "Start $ThreadCount thread(s)..."
-    $shouldRun = $true
+    $keepOnRunning = $true
     for ($threadId = 0; $threadId -lt $ThreadCount; ++$threadId) {
         $null = $runspaces[$threadId].AddScript($thread).
         AddParameter("PhonePath", $phonePath).
@@ -488,10 +512,10 @@ if ($phoneFileCount -gt 0) {
         AddParameter("ConfirmCopy", $ConfirmCopy).
         AddParameter("DryRun", $DryRun).
         AddParameter("InputQueue", $inputQueue).
-        AddParameter("OutputQueue", $outputQueue).
-        AddParameter("StatusArray", $runspaceStatus).
+        AddParameter("OutputQueue", $debugOutputQueue).
+        AddParameter("StatusArray", $runspaceStatuses).
         AddParameter("ThreadId", $threadId).
-        AddParameter("ShouldRun", [ref]$shouldRun).BeginInvoke()
+        AddParameter("KeepOnRunning", [ref]$keepOnRunning).BeginInvoke()
     }
 
     try {
@@ -501,7 +525,8 @@ if ($phoneFileCount -gt 0) {
         }
         Write-Output "Queue size: $($inputQueue.Count)"
 
-        Write-Output "Wait for our worker threads to complete processing the phone file(s)..."
+        $threadingChoice = if ($ThreadCount -eq 1) { "Single" } else { "Multi" }
+        Write-Output "${threadingChoice}-threaded processing..."
         do {
             if ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
@@ -511,20 +536,18 @@ if ($phoneFileCount -gt 0) {
                 }
             }
 
-            $totalProcessed = $runspaceStatus | ForEach-Object { $_.PhoneFileProcessed } | Measure-Object -Sum | ForEach-Object Sum
-            $totalCopied = $runspaceStatus | ForEach-Object { $_.PhoneFileCopied } | Measure-Object -Sum | ForEach-Object Sum
-            Write-Progress "Copied: $totalCopied Processed: $totalProcessed/$phoneFileCount" `
-                -PercentComplete ($totalProcessed * 100 / $phoneFileCount)
+            Write-AllProgress -StatusArray $runspaceStatuses -Goal $phoneFileCount
 
-            # If there were any results, output them.
-            $scriptOutput = $null
-            while ($outputQueue.TryDequeue([ref]$scriptOutput)) {
-                $scriptOutput
+            if ($Debug) {
+                $scriptOutput = $null
+                while ($debugOutputQueue.TryDequeue([ref]$scriptOutput)) {
+                    $scriptOutput
+                }
             }
 
-            # If the threads are done processing the input we gave them, let them know they can exit
+            # If the threads are done processing the input we gave them, let them know they can stop
             if ($inputQueue.IsEmpty) {
-                $shouldRun = $false
+                $keepOnRunning = $false
             }
 
             Start-Sleep -Milliseconds 100
@@ -534,8 +557,7 @@ if ($phoneFileCount -gt 0) {
         } while ($busyRunspaces)
 
         # Make sure we've got the final numbers
-        $totalProcessed = $runspaceStatus | ForEach-Object { $_.PhoneFileProcessed } | Measure-Object -Sum | ForEach-Object Sum
-        $totalCopied = $runspaceStatus | ForEach-Object { $_.PhoneFileCopied } | Measure-Object -Sum | ForEach-Object Sum
+        $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $StatusArray
 
         # Final result and wrapping up.
         if ($totalProcessed -eq $phoneFileCount) {
@@ -552,7 +574,7 @@ if ($phoneFileCount -gt 0) {
         }
     }
     finally {
-        Write-Output "Clean up the PowerShell instances..."
+        Write-Output "Stop the $($runspaces.Length) thread(s)..."
         foreach ($runspace in $runspaces) {
             $runspace.Stop()
             $runspace.Dispose()
