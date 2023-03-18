@@ -1,10 +1,15 @@
 <#
 .SYNOPSIS
   Ensure all the files are uploaded from the phone to "the cloud".
+
+.DESCRIPTION
   Attempt to copy any missing or different files to a destination folder which
   is expected to be a cloud sync folder.
+
   If $BeyondCompare can be resolved to a command, photos are compared with this
-  tool before any copying might happen.
+  tool before any copying might happen. If content difference is found, the copy
+  will be attempted. In this case Windows will request a confirmation and should
+  provide the means to compare the two files.
 #>
 param(
     [Parameter(Mandatory)]
@@ -17,7 +22,6 @@ param(
     # See copy_phone_to_cloud_config.example.ps1
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
-    [switch]$ConfirmCopy = $false,
     [switch]$DryRun = $false
 )
 
@@ -26,18 +30,10 @@ param(
 # Functions
 #==============================================================================#
 
-function Get-ShellProxy {
-    if (-not $global:ShellProxy) {
-        $global:ShellProxy = New-Object -Com Shell.Application
-    }
-    $global:ShellProxy
-}
-
-
 function Get-Phone {
     param($PhoneName)
 
-    $shell = Get-ShellProxy
+    $shell = New-Object -ComObject Shell.Application
     # 17 (0x11) = ssfDRIVES from the ShellSpecialFolderConstants (https://msdn.microsoft.com/en-us/library/windows/desktop/bb774096(v=vs.85).aspx)
     # => "My Computer" â€” the virtual folder that contains everything on the local computer: storage devices, printers, and Control Panel.
     # This folder can also contain mapped network drives.
@@ -121,7 +117,6 @@ $thread = {
         $CloudFolderPath,
         $DestinationFolderPath,
         $BeyondCompare,
-        $ConfirmCopy,
         $DryRun,
         $InputQueue,
         $OutputQueue,
@@ -277,15 +272,6 @@ $thread = {
     }
 
 
-    # TODO DRY
-    function Get-ShellProxy {
-        if (-not $global:ShellProxy) {
-            $global:ShellProxy = New-Object -Com Shell.Application
-        }
-        $global:ShellProxy
-    }
-
-
     function Copy-IfMissing {
         param(
             [string]$PhonePath,
@@ -293,8 +279,8 @@ $thread = {
             [string]$CloudFolderPath,
             [string]$DestinationFolderPath,
             [string]$BeyondCompare,
-            [bool]$ConfirmCopy,
-            [bool]$DryRun
+            [bool]$DryRun,
+            [System.__ComObject]$Shell
         )
 
         if (Test-FileIsInCloud $PhonePath $PhoneFile $CloudFolderPath $BeyondCompare) {
@@ -308,27 +294,10 @@ $thread = {
                 $copied = $true
             }
             else {
-                $confirmed = $true
-
-                if ($ConfirmCopy) {
-                    $confirmation = Read-Host "$fileName seems to be missing from $CloudFolderPath" `
-                        " or any of its sub-folders." `
-                        " Shall we copy it to $DestinationFolderPath? (y/n)"
-                    if ($confirmation -ne 'y') {
-                        $confirmed = $false
-                    }
-                }
-
-                if ($confirmed) {
-                    Write-Host "Copying $fileName to $DestinationFolderPath..."
-                    $shell = Get-ShellProxy
-                    $destinationFolder = $shell.Namespace($DestinationFolderPath).self
-                    $destinationFolder.GetFolder.CopyHere($PhoneFile)
-                    $copied = $true
-                }
-                else {
-                    $copied = $false
-                }
+                Write-Host "Copying $fileName to $DestinationFolderPath..."
+                $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
+                $destinationFolder.GetFolder.CopyHere($PhoneFile)
+                $copied = $true
             }
         }
 
@@ -344,7 +313,6 @@ $thread = {
             $CloudFolderPath,
             $DestinationFolderPath,
             $BeyondCompare,
-            $ConfirmCopy,
             $DryRun,
 
             # An Input queue of work to do
@@ -360,7 +328,8 @@ $thread = {
             $KeepOnRunning
         )
 
-        # Continually try to fetch work from the input queue, until the Stop message arrives.
+        $shell = New-Object -ComObject Shell.Application
+
         $processed = 0
         $copied = 0
         $phoneFile = $null
@@ -376,7 +345,7 @@ $thread = {
 
                     $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
                         -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
-                        -BeyondCompare $BeyondCompare -ConfirmCopy $ConfirmCopy -DryRun $DryRun
+                        -BeyondCompare $BeyondCompare -DryRun $DryRun -Shell $shell
                     if ($wasCopied) {
                         ++$copied
                     }
@@ -401,7 +370,6 @@ $thread = {
         $CloudFolderPath,
         $DestinationFolderPath,
         $BeyondCompare,
-        $ConfirmCopy,
         $DryRun,
         $InputQueue,
         $OutputQueue,
@@ -435,9 +403,6 @@ class RunspaceStatus {
 
 if ($ThreadCount -eq 0) {
     throw "ThreadCount must be at least 1"
-}
-elseif ($ThreadCount -gt 1 -and $ConfirmCopy) {
-    throw "ThreadCount must be 1 if ConfirmCopy is enabled"
 }
 
 $config = Get-Config($ConfigFile)
@@ -509,7 +474,6 @@ if ($phoneFileCount -gt 0) {
         AddParameter("CloudFolderPath", $CloudFolderPath).
         AddParameter("DestinationFolderPath", $DestinationFolderPath).
         AddParameter("BeyondCompare", $BeyondCompare).
-        AddParameter("ConfirmCopy", $ConfirmCopy).
         AddParameter("DryRun", $DryRun).
         AddParameter("InputQueue", $inputQueue).
         AddParameter("OutputQueue", $debugOutputQueue).
