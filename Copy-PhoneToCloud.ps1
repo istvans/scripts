@@ -11,20 +11,31 @@
 
   If `BeyondCompare` can be resolved to a command, files are compared with this
   tool before any copying might happen. If content difference is found, the copy
-  will be attempted. In this case Windows will request a confirmation and should
-  provide the means to compare the two files.
+  will be attempted.
+  Without `BeyondCompare` the script only compares the file sizes and assumes
+  a difference if the file sizes do not match. This will likely trigger
+  unnecessary copies. You can use the `OnlyCompareFileNames` switch to disable
+  this.
 
-  Suggestion: if `CloudFolderPath` and `DestinationFolderPath` are different
+  If the script finds content/size difference between files with matching names
+  the attempted copy will try to overwrite the file in the `DestinationFolderPath`
+  iff that file exists there (e.g. `DestinationFolderPath == `CloudFolderPath``).
+  In this case Windows will request a confirmation and should provide the means
+  to compare the two files.
+
+  Suggestion: If `CloudFolderPath` and `DestinationFolderPath` are different
   folders and `DestinationFolderPath` is an empty folder, you can easily implement
   a two stage copy, where you'd have all the files collected into
-  `DestinationFolderPath` without the risk to overwrite anything in
-  `CloudFolderPath`.
+  `DestinationFolderPath`. This can be handy if you expect a lot of conflict to
+  avoid dealing with a lot of pop-up windows during the script's run (could be
+  especially annoying with a lot of threads).
 
   Mega.io cloud support
   ---------------------
   If a phone file isn't available under `CloudFolderPath`, the script tries a
   very basic, automatic name-conversion following the format mega.io might use
   if "Keep file names as in the device" was disabled when the file was uploaded.
+  This method cannot deal with things like time zone changes.
 
 .PARAMETER PhoneName
   The name of the attached phone. This can be the "nickname" of the phone to
@@ -48,7 +59,7 @@
   sufficiently different from the file under `CloudFolderPath` and `DryRun` was
   not set, then the script will attempt to copy the file into this directory.
 
-  Note: the script needs to use a COM object for the copy and the `CopyHere`
+  Note: The script needs to use a COM object for the copy and the `CopyHere`
   method does not return if the copy occurred or not. So the script will log
   every attempted copy as a copy no matter what.
 
@@ -63,8 +74,11 @@
   to the application.
 
   This tool is used to determine if two files with the same name also have the
-  same content. Note: the script does not use this method for files with `.mp4`
-  extension. For such files comparing the size is adequate.
+  same content.
+
+  Note: The script does not use this tool for video files (this just means `.mp4`
+  at the moment). For such files comparing the size seems adequate i.e. the file
+  size do not seem to vary between the Phone and Windows (phone filesystem vs NTFS).
 
   You need a fully licenced version of the tool. Testing with a trial version
   suggested the tool would fail asking for a licence key in this scenario i.e.
@@ -116,6 +130,17 @@
   feature is limited to 45 threads, to keep the progress bars displayable even
   on smaller screens.
 
+.PARAMETER OnlyCompareFileNames
+  Do not compare the content or size of any file. Can be handy if you don't have
+  `BeyondCompare`. A file is only copied to the `DestinationFolderPath` if there
+  is no file matching its name in the `CloudFolderPath`.
+
+  Note: The mega.io name check is still enabled in this case.
+
+  Apart from that and the multithreading support, this mode is not much different
+  from trying to copy all your files from `PhoneFolderPath` to `CloudFolderPath`
+  if `CloudFolderPath` equals `DestinationFolderPath` using File Explorer.
+
 .PARAMETER DryRun
   Perform all the steps except the actual copying. Extremely handy for debugging.
 
@@ -130,6 +155,7 @@ param(
     [string]$BeyondCompare = "BComp.com",
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
+    [switch]$OnlyCompareFileNames = $false,
     [switch]$DryRun = $false
 )
 
@@ -225,19 +251,22 @@ function Write-AllProgress {
 # Threading
 #==============================================================================#
 
-$thread = {
+function Invoke-ThreadTop {
     param (
-        $PhonePath,
-        $CloudFolderPath,
-        $DestinationFolderPath,
-        $BeyondCompare,
-        $DryRun,
-        $InputQueue,
-        $OutputQueue,
-        $StatusArray,
-        $ThreadId,
-        $KeepOnRunning)
+        [string]$PhonePath,
+        [string]$CloudFolderPath,
+        [string]$DestinationFolderPath,
+        [string]$BeyondCompare,
+        [bool]$DryRun,
+        [bool]$OnlyCompareFileNames,
+        [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
+        [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
+        [Array]$StatusArray,
+        [Int]$ThreadId,
+        [bool]$KeepOnRunning
+    )
 
+    # Return a string that BeyondCompare can consume as an MTP path to the file.
     function Get-MtpPath {
         param([string]$PhonePath, [string]$FileName)
 
@@ -295,11 +324,8 @@ $thread = {
     }
 
 
-    <#
-    .SYNOPSIS
-    Return a possible equivalent of the name of `phoneFile` in the cloud when
-    "Keep file names as in the device" is disabled.
-    #>
+    # Return a possible equivalent of the name of `phoneFile` in the cloud when
+    # "Keep file names as in the device" is disabled.
     function Get-MegaFilename {
         param([System.__ComObject]$PhoneFile)
 
@@ -311,9 +337,9 @@ $thread = {
     }
 
 
-    function FindCloudFile {
-        param([string]$CloudFolderPath, [string]$fileName)
-        return @(Get-ChildItem -Path $CloudFolderPath -Recurse -Filter $originalFilename)[0]
+    function Find-CloudFile {
+        param([string]$CloudFolderPath, [string]$FileName)
+        return @(Get-ChildItem -Path $CloudFolderPath -Recurse -Filter $FileName)[0]
     }
 
 
@@ -322,12 +348,13 @@ $thread = {
             [string]$PhonePath,
             [System.__ComObject]$PhoneFile,
             [string]$CloudFolderPath,
-            [string]$BeyondCompare
+            [string]$BeyondCompare,
+            [bool]$OnlyCompareFileNames
         )
 
         $originalFilename = $PhoneFile.Name
 
-        $cloudFile = FindCloudFile $CloudFolderPath $originalFilename
+        $cloudFile = Find-CloudFile -CloudFolderPath $CloudFolderPath -FileName $originalFilename
 
         if ($cloudFile -eq $null) {
             $megaFilename = Get-MegaFilename $PhoneFile
@@ -338,6 +365,9 @@ $thread = {
 
         if ($cloudFile -eq $null) {
             $result = $false
+        }
+        elseif ($OnlyCompareFileNames) {
+            $result = $true
         }
         else {
             $extension = [System.IO.Path]::GetExtension($originalFilename)
@@ -356,7 +386,8 @@ $thread = {
                 }
             }
             else {
-                # These files can have different size or modified date on the phone and on the PC.
+                # These files can have different size or modified date on the phone
+                # and on the PC.
                 # So we aim to do a proper comparison if we have a tool to do that.
 
                 $command = Get-Command -Name $BeyondCompare -ErrorAction SilentlyContinue
@@ -367,10 +398,11 @@ $thread = {
                         $result = $true
                     }
                     else {
-                        $warningMsg = "'$cloudFile' seems to match '$originalFilename' but they have different sizes." + `
-                            " Without '$BeyondCompare' we just assume that they are the same."
+                        $warningMsg = "'$cloudFile' and '$originalFilename' might be the same file but they" + `
+                            " have different sizes: $phoneFileSize vs $cloudFileSize." + `
+                            " Without '$BeyondCompare' we just assume that they are different."
                         Write-Warning $warningMsg
-                        $result = $true
+                        $result = $false
                     }
                 }
                 else {
@@ -390,11 +422,12 @@ $thread = {
             [string]$CloudFolderPath,
             [string]$DestinationFolderPath,
             [string]$BeyondCompare,
+            [bool]$OnlyCompareFileNames,
             [bool]$DryRun,
             [System.__ComObject]$Shell
         )
 
-        if (Test-FileIsInCloud $PhonePath $PhoneFile $CloudFolderPath $BeyondCompare) {
+        if (Test-FileIsInCloud $PhonePath $PhoneFile $CloudFolderPath $BeyondCompare $OnlyCompareFileNames) {
             $copied = $false
         }
         else {
@@ -416,27 +449,19 @@ $thread = {
     }
 
 
-    # The script block we want to run in parallel. Threads will all
-    # retrieve work from $InputQueue, and send results to $OutputQueue
-    function Invoke-ThreadTop {
-        param(
-            $PhonePath,
-            $CloudFolderPath,
-            $DestinationFolderPath,
-            $BeyondCompare,
-            $DryRun,
-
-            # An Input queue of work to do
-            $InputQueue,
-
-            $OutputQueue,
-
-            # State tracking, to help threads communicate
-            # how much progress they've made
-            $StatusArray,
-            $ThreadId,
-
-            $KeepOnRunning
+    function Invoke-ProcessLoop {
+        param (
+            [string]$PhonePath,
+            [string]$CloudFolderPath,
+            [string]$DestinationFolderPath,
+            [string]$BeyondCompare,
+            [bool]$DryRun,
+            [bool]$OnlyCompareFileNames,
+            [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
+            [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
+            [Array]$StatusArray,
+            [Int]$ThreadId,
+            [bool]$KeepOnRunning
         )
 
         $shell = New-Object -ComObject Shell.Application
@@ -456,7 +481,8 @@ $thread = {
 
                     $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
                         -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
-                        -BeyondCompare $BeyondCompare -DryRun $DryRun -Shell $shell
+                        -BeyondCompare $BeyondCompare -OnlyCompareFileNames $OnlyCompareFileNames `
+                        -DryRun $DryRun -Shell $shell
                     if ($wasCopied) {
                         ++$copied
                     }
@@ -476,20 +502,20 @@ $thread = {
         }
     }
 
-    $arguments = @(
-        $PhonePath,
-        $CloudFolderPath,
-        $DestinationFolderPath,
-        $BeyondCompare,
-        $DryRun,
-        $InputQueue,
-        $OutputQueue,
-        $StatusArray,
-        $ThreadId,
-        $KeepOnRunning
-    )
-
-    Invoke-ThreadTop @arguments
+    $arguments = @{
+        PhonePath = $PhonePath
+        CloudFolderPath = $CloudFolderPath
+        DestinationFolderPath = $DestinationFolderPath
+        BeyondCompare = $BeyondCompare
+        DryRun = $DryRun
+        OnlyCompareFileNames = $OnlyCompareFileNames
+        InputQueue = $InputQueue
+        OutputQueue = $OutputQueue
+        StatusArray = $StatusArray
+        ThreadId = $ThreadId
+        KeepOnRunning = $KeepOnRunning
+    }
+    Invoke-ProcessLoop @arguments
 }
 
 
@@ -586,12 +612,13 @@ if ($phoneFileCount -gt 0) {
     Write-Output "Start $ThreadCount thread(s)..."
     $keepOnRunning = $true
     for ($threadId = 0; $threadId -lt $ThreadCount; ++$threadId) {
-        $null = $runspaces[$threadId].AddScript($thread).
+        $null = $runspaces[$threadId].AddScript(${function:Invoke-ThreadTop}).
         AddParameter("PhonePath", $phonePath).
         AddParameter("CloudFolderPath", $CloudFolderPath).
         AddParameter("DestinationFolderPath", $DestinationFolderPath).
         AddParameter("BeyondCompare", $BeyondCompare).
         AddParameter("DryRun", $DryRun).
+        AddParameter("OnlyCompareFileNames", $OnlyCompareFileNames).
         AddParameter("InputQueue", $inputQueue).
         AddParameter("OutputQueue", $debugOutputQueue).
         AddParameter("StatusArray", $runspaceStatuses).
@@ -638,7 +665,7 @@ if ($phoneFileCount -gt 0) {
         } while ($busyRunspaces)
 
         # Make sure we've got the final numbers
-        $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $StatusArray
+        $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $runspaceStatuses
 
         # Final result and wrapping up.
         if ($totalProcessed -eq $phoneFileCount) {
