@@ -196,10 +196,6 @@ function Write-AllProgress {
         -Status "Copied: $totalCopied Processed: $totalProcessed/$Goal" `
         -PercentComplete $percent
 
-    if ($percent -eq 10) {
-        throw "Copied: $totalCopied Processed: $totalProcessed/$Goal"
-    }
-
     # Arbitrary limit to prevent too many progress bars that can't be properly
     # displayed, at least on relatively small screens.
     $limit = 45
