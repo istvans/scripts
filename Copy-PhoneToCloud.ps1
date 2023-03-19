@@ -165,7 +165,12 @@ function Get-Config {
         $ConfigFile = [IO.Path]::Combine($PSScriptRoot, $ConfigFile)
     }
 
-    . $ConfigFile
+    if ([System.IO.File]::Exists($ConfigFile)) {
+        . $ConfigFile
+    }
+    else {
+        $config = $null
+    }
 
     return $config
 }
@@ -353,9 +358,6 @@ $thread = {
                 # So we aim to do a proper comparison if we have a tool to do that.
 
                 $command = Get-Command -Name $BeyondCompare -ErrorAction SilentlyContinue
-                if ($originalFilename -eq "2020-01-19 11.51.44.jpg") {
-                    Wait-Debugger
-                }
                 if ($command -eq $null) {
                     $phoneFileSize = Get-ExtendedProperty $PhoneFile "System.Size"
                     $cloudFileSize = $cloudFile.Length
@@ -514,29 +516,35 @@ if ($ThreadCount -eq 0) {
 
 $config = Get-Config($ConfigFile)
 
-if ($CloudFolderPath -eq "<configured>") {
-    $CloudFolderPath = $config.settings.cloudFolderPath
+if ($config -eq $null) {
+    Write-Output "'$ConfigFile' is not a valid config."
 }
-
-if ($DestinationFolderPath -eq "<configured>") {
-    $DestinationFolderPath = $config.settings.destinationFolderPath
-}
-
-$phoneInfo = $config.phones[$PhoneName]
-if ($phoneInfo -ne $null) {
-    $PhoneName = $phoneInfo.name
-}
-
-if ($PhoneFolderPath -eq "<configured>") {
-    if ($phoneInfo -eq $null) {
-        throw "Failed to find $PhoneName in $ConfigFile"
+else {
+    # Substitute placeholders with the configured, real values.
+    if ($CloudFolderPath -eq "<configured>") {
+        $CloudFolderPath = $config.settings.cloudFolderPath
     }
-    $PhoneFolderPath = $phoneInfo.folder
+
+    if ($DestinationFolderPath -eq "<configured>") {
+        $DestinationFolderPath = $config.settings.destinationFolderPath
+    }
+
+    $phoneInfo = $config.phones[$PhoneName]
+    if ($phoneInfo -ne $null) {
+        $PhoneName = $phoneInfo.name
+    }
+
+    if ($PhoneFolderPath -eq "<configured>") {
+        if ($phoneInfo -eq $null) {
+            throw "Failed to find $PhoneName in $ConfigFile"
+        }
+        $PhoneFolderPath = $phoneInfo.folder
+    }
 }
 
 $phone = Get-Phone $PhoneName
 if ($phone -eq $null) {
-    throw "Can't find '$PhoneName'. Have you attached the phone? Is it in 'File transfer' mode?"
+    throw "Can't find '$PhoneName'. Have you attached the phone? Is it in 'File transfer' mode? Did you specify a valid config?"
 }
 if (!$(Test-Path -Path  $CloudFolderPath -PathType Container)) {
     throw "Can't find the folder '$CloudFolderPath'."
