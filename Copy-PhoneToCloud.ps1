@@ -1,15 +1,118 @@
 <#
 .SYNOPSIS
-  Ensure all the files are uploaded from the phone to "the cloud".
+  Ensure the phone files are uploaded to "the cloud".
 
 .DESCRIPTION
-  Attempt to copy any missing or different files to a destination folder which
-  is expected to be a cloud sync folder.
+  Find all the files on the `PhoneName` phone under `PhoneFolderPath` applying
+  the file `Filter`. Try to find all these files, if any, under the
+  `CloudFolderPath` directory. Attempt to copy any missing or different files to
+  the `DestinationFolderPath` directory which is expected to be a cloud sync
+  folder (hence the name).
 
-  If $BeyondCompare can be resolved to a command, photos are compared with this
+  If `BeyondCompare` can be resolved to a command, files are compared with this
   tool before any copying might happen. If content difference is found, the copy
   will be attempted. In this case Windows will request a confirmation and should
   provide the means to compare the two files.
+
+  Mega.io cloud support
+  ---------------------
+  If a phone file isn't available under `CloudFolderPath`, the script tries a
+  very basic, automatic name-conversion following the format mega.io might use
+  if "Keep file names as in the device" was disabled when the file was uploaded.
+
+.PARAMETER PhoneName
+  The name of the attached phone. This can be the "nickname" of the phone to
+  identify it in the `ConfigFile` (see below) or the actual name of the phone as
+  it shows up in the File Explorer e.g. "ONEPLUS A6013" (without quotes).
+
+.PARAMETER PhoneFolderPath
+  The path to a folder on the `PhoneName` phone where the script should look for
+  files.
+
+  Can be `"<configured>"`, see `ConfigFile`.
+
+.PARAMETER CloudFolderPath
+  The script tries to find the found phone files under this folder. If a file can
+  be found here, the script won't copy it.
+
+  Can be `"<configured>"`, see `ConfigFile`.
+
+.PARAMETER DestinationFolderPath
+  If a file couldn't be found under `CloudFolderPath` or its content is
+  sufficiently different from the file under `CloudFolderPath` and `DryRun` was
+  not set, then the script will attempt to copy the file into this directory.
+
+  Note: the script needs to use a COM object for the copy and the `CopyHere`
+  method does not return if the copy occurred or not. So the script will log
+  every attempted copy as a copy no matter what.
+
+  Can be `"<configured>"`, see `ConfigFile`.
+
+.PARAMETER Filter
+  The phone file filter. It's a regular expression that needs to match each file
+  that we would like to make sure they are uploaded to the cloud.
+
+.PARAMETER BeyondCompare
+  The name of `BComp.com` if the application is on the `PATH` or the full path
+  to the application.
+
+  This tool is used to determine if two files with the same name also have the
+  same content. Note: the script does not use this method for files with `.mp4`
+  extension. For such files comparing the size is adequate.
+
+  You need a fully licenced version of the tool. Testing with a trial version
+  suggested the tool would fail asking for a licence key in this scenario i.e.
+  potentially running from multiple threads. The single threaded operation might
+  work even with a trial version of `BeyondCompare` but this wasn't explicitly
+  tested.
+
+.PARAMETER ConfigFile
+  Make the use of the script simpler by allowing the User to just specify the
+  "nickname" of their phone and leave every other parameter on their default
+  values. The parameters with "<configured>" default value will try to read their
+  actual value from the ConfigFile.
+
+  The ConfigFile should be a powershell script with the following structure:
+  ```powershell
+    $config = @{
+        settings = @{
+            cloudFolderPath = "<your local cloud sync folder>"
+            destinationFolderPath = "<where to copy missing files to>"
+        }
+        phones = @{
+            oneplus = @{
+                name = "<your phone's name as it is shown in the File Explorer>"
+                folder = "<the full path (without the phone name) on your phone to"`
+                         " the folder where you want to sync files from>"
+            }
+            samsung = @{
+                # ...
+            }
+            iphone = @{
+                # ...
+            }
+        }
+    }
+  ```
+
+  If the ConfigFile does not exist and any of the arguments have the `"<configured>"`
+  value, the script will fail. Otherwise, the script will try to use `PhoneName`
+  as the real phone name and all the other arguments as ones with proper values.
+
+  In other words: the script can be used with or without a `ConfigFile`.
+
+.PARAMETER ThreadCount
+  By default this is set to the number of cores of the CPU in the machine that
+  is executing the script. Its value must be at least 1.
+
+  The script displays a progress bar to show the total progress and a progress
+  bar for each thread to visualise their individual progresses. This latter
+  feature is limited to 45 threads, to keep the progress bars displayable even
+  on smaller screens.
+
+.PARAMETER DryRun
+  Perform all the steps except the actual copying. Extremely handy for debugging.
+
 #>
 param(
     [Parameter(Mandatory)]
@@ -19,7 +122,6 @@ param(
     [string]$DestinationFolderPath = "<configured>",
     [string]$Filter = ".(jpg|jpeg|mp4)$",
     [string]$BeyondCompare = "BComp.com",
-    # See copy_phone_to_cloud_config.example.ps1
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
     [switch]$DryRun = $false
@@ -93,16 +195,21 @@ function Write-AllProgress {
         throw "Copied: $totalCopied Processed: $totalProcessed/$Goal"
     }
 
-    for ($threadId = 0; $threadId -lt $StatusArray.Length; ++$threadId) {
-        $runspaceStatus = $StatusArray[$threadId]
-        $processed = $runspaceStatus.PhoneFileProcessed
-        $copied = $runspaceStatus.PhoneFileCopied
-        $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
-        $threadPercent = [int]($processed * 100 / $Goal)  # will never reach 100, but that's fine
-        Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
-            -Activity "Thread${threadProgressId}:" `
-            -Status "Copied: $copied Processed: $processed/$Goal" `
-            -PercentComplete $threadPercent
+    # Arbitrary limit to prevent too many progress bars that can't be properly
+    # displayed, at least on relatively small screens.
+    $limit = 45
+    if ($StatusArray.Length -le $limit) {
+        for ($threadId = 0; $threadId -lt $StatusArray.Length; ++$threadId) {
+            $runspaceStatus = $StatusArray[$threadId]
+            $processed = $runspaceStatus.PhoneFileProcessed
+            $copied = $runspaceStatus.PhoneFileCopied
+            $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
+            $threadPercent = [int]($processed * 100 / $Goal)  # will never reach 100, but that's fine
+            Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
+                -Activity "Thread${threadProgressId}:" `
+                -Status "Copied: $copied Processed: $processed/$Goal" `
+                -PercentComplete $threadPercent
+        }
     }
 }
 
@@ -183,14 +290,14 @@ $thread = {
 
     <#
     .SYNOPSIS
-    Return a possible equivalent of the name of `$phoneFile` in the cloud when
+    Return a possible equivalent of the name of `phoneFile` in the cloud when
     "Keep file names as in the device" is disabled.
     #>
     function Get-MegaFilename {
-        param([System.__ComObject]$phoneFile)
+        param([System.__ComObject]$PhoneFile)
 
-        $extension = [System.IO.Path]::GetExtension($phoneFile.name)
-        $dateModified = Get-ExtendedProperty $phoneFile "System.DateModified"
+        $extension = [System.IO.Path]::GetExtension($PhoneFile.Name)
+        $dateModified = Get-ExtendedProperty $PhoneFile "System.DateModified"
         $megaName = $dateModified.ToString("yyyy-MM-dd HH.mm.ss")
         $megaFilename = "$megaName$extension"
         return $megaFilename
