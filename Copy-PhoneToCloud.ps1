@@ -14,6 +14,12 @@
   will be attempted. In this case Windows will request a confirmation and should
   provide the means to compare the two files.
 
+  Suggestion: if `CloudFolderPath` and `DestinationFolderPath` are different
+  folders and `DestinationFolderPath` is an empty folder, you can easily implement
+  a two stage copy, where you'd have all the files collected into
+  `DestinationFolderPath` without the risk to overwrite anything in
+  `CloudFolderPath`.
+
   Mega.io cloud support
   ---------------------
   If a phone file isn't available under `CloudFolderPath`, the script tries a
