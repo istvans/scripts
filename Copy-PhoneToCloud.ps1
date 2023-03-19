@@ -37,6 +37,12 @@
   if "Keep file names as in the device" was disabled when the file was uploaded.
   This method cannot deal with things like time zone changes.
 
+  External dependencies
+  ---------------------
+  Apart from the optional `BeyondCompare` dependency (see above) the script also
+  relies on `Get-ElapsedAndRemainingTime.ps1`. It should be next to the script
+  or on the PATH.
+
 .PARAMETER PhoneName
   The name of the attached phone. This can be the "nickname" of the phone to
   identify it in the `ConfigFile` (see below) or the actual name of the phone as
@@ -143,7 +149,6 @@
 
 .PARAMETER DryRun
   Perform all the steps except the actual copying. Extremely handy for debugging.
-
 #>
 param(
     [Parameter(Mandatory)]
@@ -165,7 +170,7 @@ param(
 #==============================================================================#
 
 function Get-Phone {
-    param($PhoneName)
+    param([string]$PhoneName)
 
     $shell = New-Object -ComObject Shell.Application
     # 17 (0x11) = ssfDRIVES from the ShellSpecialFolderConstants (https://msdn.microsoft.com/en-us/library/windows/desktop/bb774096(v=vs.85).aspx)
@@ -178,30 +183,60 @@ function Get-Phone {
 
 
 function Get-PhoneSubFolder {
-    param($parent, [string]$path)
-    $pathParts = @( $path.Split([system.io.path]::DirectorySeparatorChar) )
-    $current = $parent
+    param([System.__ComObject]$Parent, [string]$Path)
+    $pathParts = @($Path.Split([System.IO.Path]::DirectorySeparatorChar))
+    $current = $Parent
     foreach ($pathPart in $pathParts) {
         if ($pathPart) {
-            $current = $current.GetFolder.items() | Where-Object { $_.Name -eq $pathPart }
+            $current = $current.GetFolder.Items() | Where-Object { $_.Name -eq $pathPart }
         }
     }
     return $current
 }
 
 
+# Return the local module path if it can be resolved or $null
+# To resolve `ModuleFile` to an existing path the algorithm tries these options
+# in this order:
+# - as is (e.g. absolute path)
+# - look in the current directory (e.g. relative path)
+# - look in this script's directory
+# TODO use something standard like Import-Module instead of Get-LocalModulePath
+function Get-LocalModulePath {
+    param([string]$ModuleFile)
+
+    $existingPath = if ([System.IO.File]::Exists($ModuleFile)) {
+        $ModuleFile
+    }
+    else {
+        $path = [IO.Path]::Combine($PWD, $ModuleFile)
+        if ([System.IO.File]::Exists($path)) {
+            $path
+        } else {
+            $path = [IO.Path]::Combine($PSScriptRoot, $ModuleFile)
+            if ([System.IO.File]::Exists($path)) {
+                $path
+            }
+            else {
+                $null
+            }
+        }
+    }
+
+    $existingPath
+}
+
+
 function Get-Config {
     param([string]$ConfigFile)
 
-    if (![System.IO.File]::Exists($ConfigFile)) {
-        $ConfigFile = [IO.Path]::Combine($PSScriptRoot, $ConfigFile)
-    }
-
-    if ([System.IO.File]::Exists($ConfigFile)) {
-        . $ConfigFile
+    $configFilePath = Get-LocalModulePath $ConfigFile
+    if ($configFilePath -eq $null) {
+        $config = $null
     }
     else {
-        $config = $null
+        Write-Host "Reading in '$configFilePath'..."
+        . $configFilePath
     }
 
     return $config
@@ -218,14 +253,22 @@ function Get-TotalProcessedAndCopied {
 
 
 function Write-AllProgress {
-    param($StatusArray, [Int]$Goal)
+    param(
+        [Array]$StatusArray,
+        [DateTime]$StartTime,
+        [uint32]$Goal
+    )
 
     $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $StatusArray
 
+    $timing = Get-ElapsedAndRemainingTime -StartTime $StartTime -ProcessedCount $totalProcessed -TotalCount $Goal
+    $elapsed = $timing.ElapsedTime
+    $remaining = $timing.RemainingTime
+
     $parentProgressId = 0
-    $percent = [int]($totalProcessed * 100 / $Goal)
+    $percent = [uint32]($totalProcessed * 100 / $Goal)
     Write-Progress -Id $parentProgressId -Activity "Total:" `
-        -Status "Copied: $totalCopied Processed: $totalProcessed/$Goal" `
+        -Status "Copied: $totalCopied Processed: $totalProcessed/$Goal Elapsed: $elapsed Left: $remaining" `
         -PercentComplete $percent
 
     # Arbitrary limit to prevent too many progress bars that can't be properly
@@ -237,7 +280,7 @@ function Write-AllProgress {
             $processed = $runspaceStatus.PhoneFileProcessed
             $copied = $runspaceStatus.PhoneFileCopied
             $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
-            $threadPercent = [int]($processed * 100 / $Goal)  # will never reach 100, but that's fine
+            $threadPercent = [uint32]($processed * 100 / $Goal)  # will never reach 100, but that's fine
             Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
                 -Activity "Thread${threadProgressId}:" `
                 -Status "Copied: $copied Processed: $processed/$Goal" `
@@ -262,8 +305,8 @@ function Invoke-ThreadTop {
         [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
         [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
         [Array]$StatusArray,
-        [Int]$ThreadId,
-        [bool]$KeepOnRunning
+        [uint32]$ThreadId,
+        [ref]$KeepOnRunning
     )
 
     # Return a string that BeyondCompare can consume as an MTP path to the file.
@@ -427,7 +470,14 @@ function Invoke-ThreadTop {
             [System.__ComObject]$Shell
         )
 
-        if (Test-FileIsInCloud $PhonePath $PhoneFile $CloudFolderPath $BeyondCompare $OnlyCompareFileNames) {
+        $arguments = @{
+            PhonePath = $PhonePath
+            PhoneFile = $PhoneFile
+            CloudFolderPath = $CloudFolderPath
+            BeyondCompare = $BeyondCompare
+            OnlyCompareFileNames =$OnlyCompareFileNames
+        }
+        if (Test-FileIsInCloud @arguments) {
             $copied = $false
         }
         else {
@@ -460,8 +510,8 @@ function Invoke-ThreadTop {
             [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
             [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
             [Array]$StatusArray,
-            [Int]$ThreadId,
-            [bool]$KeepOnRunning
+            [uint32]$ThreadId,
+            [ref]$KeepOnRunning
         )
 
         $shell = New-Object -ComObject Shell.Application
@@ -488,8 +538,9 @@ function Invoke-ThreadTop {
                     }
                     ++$processed
 
-                    $StatusArray[$ThreadId].PhoneFileProcessed = $processed
-                    $StatusArray[$ThreadId].PhoneFileCopied = $copied
+                    $runspaceStatus = [ref]$StatusArray[$ThreadId]
+                    $runspaceStatus.Value.PhoneFileProcessed = $processed
+                    $runspaceStatus.Value.PhoneFileCopied = $copied
                 }
             }
             else {
@@ -524,8 +575,8 @@ function Invoke-ThreadTop {
 #==============================================================================#
 
 class RunspaceStatus {
-    [Int]$PhoneFileProcessed
-    [Int]$PhoneFileCopied
+    [uint32]$PhoneFileProcessed
+    [uint32]$PhoneFileCopied
 
     RunspaceStatus() {
         $this.PhoneFileProcessed = 0
@@ -538,11 +589,22 @@ class RunspaceStatus {
 # Main
 #==============================================================================#
 
+$timingModule = "Get-ElapsedAndRemainingTime.ps1"
+# TODO use something standard like Import-Module instead of Get-LocalModulePath
+$module = Get-LocalModulePath $timingModule
+if ($module -eq $null) {
+    throw "Cannot find '$timingModule'. Place it next to this script, into '$PWD' or have it on the `$env:PATH"
+}
+else {
+    Write-Output "Importing '$module'..."
+}
+. $module
+
 if ($ThreadCount -eq 0) {
     throw "ThreadCount must be at least 1"
 }
 
-$config = Get-Config($ConfigFile)
+$config = Get-Config $ConfigFile
 
 if ($config -eq $null) {
     Write-Output "'$ConfigFile' is not a valid config."
@@ -627,6 +689,10 @@ if ($phoneFileCount -gt 0) {
     }
 
     try {
+        # Capture here for elapsed time calculation and remaining time estimation later.
+        # This is when the processing starts since the threads are already running.
+        $startTime = Get-Date
+
         Write-Output "Queue $phoneFileCount phone file(s)..."
         foreach ($phoneFile in $phoneFiles) {
             $inputQueue.Enqueue($phoneFile)
@@ -644,7 +710,7 @@ if ($phoneFileCount -gt 0) {
                 }
             }
 
-            Write-AllProgress -StatusArray $runspaceStatuses -Goal $phoneFileCount
+            Write-AllProgress -StatusArray $runspaceStatuses -StartTime $startTime -Goal $phoneFileCount
 
             if ($Debug) {
                 $scriptOutput = $null
@@ -667,7 +733,7 @@ if ($phoneFileCount -gt 0) {
         # Make sure we've got the final numbers
         $totalProcessed, $totalCopied = Get-TotalProcessedAndCopied $runspaceStatuses
 
-        # Final result and wrapping up.
+        # Show the result.
         if ($totalProcessed -eq $phoneFileCount) {
             if ($totalCopied -eq 0) {
                 Write-Output "All $phoneFileCount file(s) seem to be already synced. 🎉🎉🎉"
@@ -682,6 +748,10 @@ if ($phoneFileCount -gt 0) {
         }
     }
     finally {
+        $timing = Get-ElapsedAndRemainingTime -StartTime $startTime -ProcessedCount $totalProcessed -TotalCount $phoneFileCount
+        $elapsed = $timing.ElapsedTime
+        Write-Output "Elapsed time: $elapsed"
+
         Write-Output "Stop the $($runspaces.Length) thread(s)..."
         foreach ($runspace in $runspaces) {
             $runspace.Stop()
