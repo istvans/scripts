@@ -161,7 +161,7 @@ param(
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
     [switch]$OnlyCompareFileNames = $false,
-    [switch]$DryRun = $false
+    [switch]$DryRun = $false  # TODO rename to WhatIf; seems like a better name in the powershell ecosystem
 )
 
 
@@ -470,6 +470,14 @@ function Invoke-ThreadTop {
             [System.__ComObject]$Shell
         )
 
+        # TODO add a $StateFile.
+        # If a file was already processed in a previous session and it did not
+        # need a copy, skip the file. Do we really need to handle copied files
+        # differently? If we make sure copied files are really copied...
+        # then we only need to capture if a copy failed! so then the script would
+        # retry those copies if they are still needed (normally reprocessing)
+        # try Export-Clixml and Import-Clixml
+
         $arguments = @{
             PhonePath = $PhonePath
             PhoneFile = $PhoneFile
@@ -488,9 +496,44 @@ function Invoke-ThreadTop {
                 $copied = $true
             }
             else {
+                # TODO This can fail with:
+                # Error Copying File or Folder
+                # The requested resource is in use.
+                #
+                # TODO ^ google this. what could cause this?
+                #
+                # Thread blocking issue:
+                # ======================
+                # Does this make that thread hang until the user clicks on that
+                # pop-up window???
+                # It seems it does! Thread3 was sitting on 50 processed files for
+                # long minutes. Another error meant another thread stalled. Yep,
+                # Thread6 is just sitting on 68 waiting for a click :/
+                # This is very bad.
+                # Maybe we need a global copy lock?
+                # Careful: if we have all the files missing that would render
+                # the script single-threaded!
+                # I've just assumed that the problem is that we try to copy 2 or
+                # more files on separate threads from the phone to the PC at the
+                # same time. This is just a theory. One that we can test though,
+                # so not a bad theory.
+                #
+                # Copy failed and a whole re-run would be needed to try copying
+                # that single file again issue:
+                # =============================
+                # Can we detect that there was a failure without CopyHere returning
+                # something sensible?
+                # Of course! If the file isn't in the destination folder we could
+                # retry.
+                # RetryCopyMaxAttempts = 5
+                # RetryWaitTimeMilliseconds = 100
                 Write-Host "Copying $fileName to $DestinationFolderPath..."
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
                 $destinationFolder.GetFolder.CopyHere($PhoneFile)
+                # TODO check the file is really in the destination
+                # retry if it isn't (see above)
+                # This way copied will really mean copied so also update the
+                # documentation
                 $copied = $true
             }
         }
