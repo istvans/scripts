@@ -468,7 +468,7 @@ function Invoke-ThreadTop {
         if ($cloudFile -eq $null) {
             $megaFilename = Get-MegaFilename $PhoneFile
             Write-Debug "Mega filename guess for '$originalFilename': '$megaFilename'"
-            $cloudFile = FindCloudFile $CloudFolderPath $megaFilename
+            $cloudFile = Find-CloudFile $CloudFolderPath $megaFilename
             Write-Debug "Mega filename match: $($cloudFile -ne $null)"
         }
 
@@ -568,15 +568,16 @@ function Invoke-ThreadTop {
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
                 $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $fileName)
 
-                $try = 1
+                $retryCount = 0
                 do {
-                    if ($try -gt 1) {
-                        $OutputQueue.Enqueue("Copying $fileName to $DestinationFolderPath (try: $try)...")
+                    if ($retryCount -gt 0) {
+                        Start-Sleep -Milliseconds 100
+                        $OutputQueue.Enqueue("Copying $fileName to $DestinationFolderPath (retry: $retryCount)...")
                     }
-                    ++$try
+                    ++$retryCount
+
                     $destinationFolder.GetFolder.CopyHere($PhoneFile)
-                    Start-Sleep -Milliseconds 100
-                } while (!Test-Path $destinationFile)
+                } while (-Not (Test-Path $destinationFile))
 
                 $copied = $true
             }
@@ -614,7 +615,7 @@ function Invoke-ThreadTop {
                     $StatusArray[$ThreadId].PhoneFileProcessed = $processed
                 }
                 else {
-                    # $status = "Processing $($phoneFile.Name) on thread $ThreadId..."
+                    $status = "Processing $($phoneFile.Name) on thread $ThreadId..."
 
                     $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
                         -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
@@ -632,7 +633,7 @@ function Invoke-ThreadTop {
             }
             else {
                 $waitTimeMs = 100
-                $status = "Thread $ThreadId is waiting $waitTimeMs for a new message..."
+                $status = "Thread $ThreadId is waiting $waitTimeMs for a new file to process..."
                 Start-Sleep -Milliseconds $waitTimeMs
             }
 
@@ -846,6 +847,7 @@ if ($phoneFileCount -gt 0) {
         Write-Output "Elapsed time: $elapsed"
 
         Write-Output "Stop the $($runspaces.Length) thread(s)..."
+
         Stop-RunspaceBlockerModalWindows $AutoHotkey
         foreach ($runspace in $runspaces) {
             $runspace.Stop()
