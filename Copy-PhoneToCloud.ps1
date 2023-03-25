@@ -62,7 +62,7 @@
 
 .PARAMETER DestinationFolderPath
   If a file couldn't be found under `CloudFolderPath` or its content is
-  sufficiently different from the file under `CloudFolderPath` and `DryRun` was
+  sufficiently different from the file under `CloudFolderPath` and `WhatIf` was
   not set, then the script will attempt to copy the file into this directory.
 
   Note: The script needs to use a COM object for the copy and the `CopyHere`
@@ -147,7 +147,7 @@
   from trying to copy all your files from `PhoneFolderPath` to `CloudFolderPath`
   if `CloudFolderPath` equals `DestinationFolderPath` using File Explorer.
 
-.PARAMETER DryRun
+.PARAMETER WhatIf
   Perform all the steps except the actual copying. Extremely handy for debugging.
 #>
 param(
@@ -161,7 +161,7 @@ param(
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
     [switch]$OnlyCompareFileNames = $false,
-    [switch]$DryRun = $false  # TODO rename to WhatIf; seems like a better name in the powershell ecosystem
+    [switch]$WhatIf = $false
 )
 
 
@@ -300,7 +300,7 @@ function Invoke-ThreadTop {
         [string]$CloudFolderPath,
         [string]$DestinationFolderPath,
         [string]$BeyondCompare,
-        [bool]$DryRun,
+        [bool]$WhatIf,
         [bool]$OnlyCompareFileNames,
         [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
         [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
@@ -466,8 +466,9 @@ function Invoke-ThreadTop {
             [string]$DestinationFolderPath,
             [string]$BeyondCompare,
             [bool]$OnlyCompareFileNames,
-            [bool]$DryRun,
-            [System.__ComObject]$Shell
+            [bool]$WhatIf,
+            [System.__ComObject]$Shell,
+            [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue
         )
 
         # TODO add a $StateFile.
@@ -491,7 +492,7 @@ function Invoke-ThreadTop {
         else {
             $fileName = $PhoneFile.Name
 
-            if ($DryRun) {
+            if ($WhatIf) {
                 Write-Host "Would try to copy $fileName to $DestinationFolderPath"
                 $copied = $true
             }
@@ -529,7 +530,16 @@ function Invoke-ThreadTop {
                 # RetryWaitTimeMilliseconds = 100
                 Write-Host "Copying $fileName to $DestinationFolderPath..."
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
+
                 $destinationFolder.GetFolder.CopyHere($PhoneFile)
+
+                Start-Sleep -Milliseconds 500
+
+                $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $PhoneFile.Name)
+                while (!Test-Path $destinationFile) {
+                    $OutputQueue.Enqueue("Waiting for $destinationFile to get copied...")
+                    Start-Sleep -Milliseconds 100
+                }
                 # TODO check the file is really in the destination
                 # retry if it isn't (see above)
                 # This way copied will really mean copied so also update the
@@ -548,7 +558,7 @@ function Invoke-ThreadTop {
             [string]$CloudFolderPath,
             [string]$DestinationFolderPath,
             [string]$BeyondCompare,
-            [bool]$DryRun,
+            [bool]$WhatIf,
             [bool]$OnlyCompareFileNames,
             [System.Collections.Concurrent.ConcurrentQueue[System.__ComObject]]$InputQueue,
             [System.Collections.Concurrent.ConcurrentQueue[String]]$OutputQueue,
@@ -575,7 +585,7 @@ function Invoke-ThreadTop {
                     $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
                         -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
                         -BeyondCompare $BeyondCompare -OnlyCompareFileNames $OnlyCompareFileNames `
-                        -DryRun $DryRun -Shell $shell
+                        -WhatIf $WhatIf -Shell $shell -OutputQueue $OutputQueue
                     if ($wasCopied) {
                         ++$copied
                     }
@@ -601,7 +611,7 @@ function Invoke-ThreadTop {
         CloudFolderPath = $CloudFolderPath
         DestinationFolderPath = $DestinationFolderPath
         BeyondCompare = $BeyondCompare
-        DryRun = $DryRun
+        WhatIf = $WhatIf
         OnlyCompareFileNames = $OnlyCompareFileNames
         InputQueue = $InputQueue
         OutputQueue = $OutputQueue
@@ -696,7 +706,7 @@ $phonePath = "$PhoneName\$PhoneFolderPath"
 Write-Output "Processing path: $phonePath"
 Write-Output "Looking for files in: $CloudFolderPath"
 if ($phoneFileCount -gt 0) {
-    $action = if ($DryRun) { "NOT copy (dry-run)" } else { "copy" }
+    $action = if ($WhatIf) { "NOT copy (dry-run)" } else { "copy" }
     Write-Output "Will $action missing files to: $DestinationFolderPath"
 
     if ($ThreadCount -eq 1) {
@@ -716,13 +726,14 @@ if ($phoneFileCount -gt 0) {
 
     Write-Output "Start $ThreadCount thread(s)..."
     $keepOnRunning = $true
+    $syncHash = [hashtable]::Synchronized(@{Test='Test'})
     for ($threadId = 0; $threadId -lt $ThreadCount; ++$threadId) {
         $null = $runspaces[$threadId].AddScript(${function:Invoke-ThreadTop}).
         AddParameter("PhonePath", $phonePath).
         AddParameter("CloudFolderPath", $CloudFolderPath).
         AddParameter("DestinationFolderPath", $DestinationFolderPath).
         AddParameter("BeyondCompare", $BeyondCompare).
-        AddParameter("DryRun", $DryRun).
+        AddParameter("WhatIf", $WhatIf).
         AddParameter("OnlyCompareFileNames", $OnlyCompareFileNames).
         AddParameter("InputQueue", $inputQueue).
         AddParameter("OutputQueue", $debugOutputQueue).
@@ -748,6 +759,7 @@ if ($phoneFileCount -gt 0) {
             if ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
                 if ($key.key -eq "C" -and $key.modifiers -eq "Control") {
+                    $keepOnRunning = $false
                     Write-Output "Cancelled"
                     break
                 }
@@ -755,7 +767,7 @@ if ($phoneFileCount -gt 0) {
 
             Write-AllProgress -StatusArray $runspaceStatuses -StartTime $startTime -Goal $phoneFileCount
 
-            if ($Debug) {
+            if ($PSBoundParameters["Debug"]) {
                 $scriptOutput = $null
                 while ($debugOutputQueue.TryDequeue([ref]$scriptOutput)) {
                     $scriptOutput
@@ -782,7 +794,7 @@ if ($phoneFileCount -gt 0) {
                 Write-Output "All $phoneFileCount file(s) seem to be already synced. 🎉🎉🎉"
             }
             else {
-                $action = if ($DryRun) { "would have been" } else { "were" }
+                $action = if ($WhatIf) { "would have been" } else { "were" }
                 Write-Output "$totalCopied/$phoneFileCount item(s) $action copied to $DestinationFolderPath"
             }
         }
@@ -796,6 +808,9 @@ if ($phoneFileCount -gt 0) {
         Write-Output "Elapsed time: $elapsed"
 
         Write-Output "Stop the $($runspaces.Length) thread(s)..."
+
+        $host.EnterNestedPrompt()
+
         foreach ($runspace in $runspaces) {
             $runspace.Stop()
             $runspace.Dispose()
