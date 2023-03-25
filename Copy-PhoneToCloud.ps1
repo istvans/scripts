@@ -544,7 +544,11 @@ function Invoke-ThreadTop {
         # if "destination" and "cloud" are the same then that folder is kind of
         # our state file. unless comparing the files is so expensive compared
         # compared to reading that statefile in and checking its state in a
-        # hash-map. would need measurement
+        # hash-map. needs measurement
+        # -PhoneName oneplus -DestinationFolderPath "D:\copy_playground\target" -Debug
+        # 2984 files
+        # no state file:
+        # state file:
         # try Export-Clixml and Import-Clixml
 
         $arguments = @{
