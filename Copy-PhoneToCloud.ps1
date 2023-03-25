@@ -157,6 +157,8 @@ param(
     [string]$CloudFolderPath = "<configured>",
     [string]$DestinationFolderPath = "<configured>",
     [string]$Filter = ".(jpg|jpeg|mp4)$",
+    [string]$Choco = "choco",
+    [string]$AutoHotkey = "AutoHotkey.exe",
     [string]$BeyondCompare = "BComp.com",
     [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
@@ -168,6 +170,70 @@ param(
 #==============================================================================#
 # Functions
 #==============================================================================#
+
+
+function Ensure-ChocoIsInstalled
+{
+    param([string]$Choco)
+
+    $command = Get-Command -Name $Choco -ErrorAction SilentlyContinue
+    if ($command -eq $null) {
+        Write-Output "'$Choco' is missing. Let's install it."
+
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        $chocoInstaller = "https://community.chocolatey.org/install.ps1"
+        $arguments = "Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('$chocoInstaller'))"
+        Start-Process powershell -ArgumentList $arguments -Verb RunAs -Wait
+    } else {
+        Write-Output "'$Choco' is installed."
+    }
+}
+
+
+function Ensure-AutoHotkeyIsInstalled
+{
+    param([string]$Choco, [string]$AutoHotkey)
+
+    $command = Get-Command -Name $AutoHotkey -ErrorAction SilentlyContinue
+    if ($command -eq $null) {
+        Write-Output "'$AutoHotkey' is missing. Let's install it."
+
+        Ensure-ChocoIsInstalled $Choco
+
+        # handle the case when choco was freshly installed
+        $chocoCommand = Get-Command -Name $Choco -ErrorAction SilentlyContinue
+        if ($chocoCommand -eq $null) {
+            $absoluteChoco = [IO.Path]::Combine($env:ChocolateyInstall, "choco")
+            $chocoCommand = Get-Command -Name $absoluteChoco -ErrorAction SilentlyContinue
+            if ($chocoCommand -eq $null) {
+                throw "Cannot find '$choco'"
+            }
+        }
+
+        Start-Process $chocoCommand -ArgumentList "install autohotkey 1.1.36.02" –Verb RunAs -Wait
+    } else {
+        Write-Output "'$AutoHotkey' is installed."
+    }
+}
+
+
+function Ensure-Prerequisites
+{
+    param([string]$Choco, [string]$AutoHotkey)
+
+    Ensure-AutoHotkeyIsInstalled $Choco $AutoHotkey
+}
+
+
+function Stop-RunspaceBlockerModalWindows
+{
+    param([string]$AutoHotkey)
+
+    $modalWindowKiller = [IO.Path]::Combine($PSScriptRoot, "close_annoying_modal_error_popups.ahk")
+    & $AutoHotkey $modalWindowKiller
+}
+
 
 function Get-Phone {
     param([string]$PhoneName)
@@ -472,11 +538,13 @@ function Invoke-ThreadTop {
         )
 
         # TODO add a $StateFile.
-        # If a file was already processed in a previous session and it did not
-        # need a copy, skip the file. Do we really need to handle copied files
-        # differently? If we make sure copied files are really copied...
-        # then we only need to capture if a copy failed! so then the script would
-        # retry those copies if they are still needed (normally reprocessing)
+        # If a file was already processed in a previous session skip the file.
+        # we do not have failed copies
+        # how much time it takes to compare the files without copying?
+        # if "destination" and "cloud" are the same then that folder is kind of
+        # our state file. unless comparing the files is so expensive compared
+        # compared to reading that statefile in and checking its state in a
+        # hash-map. would need measurement
         # try Export-Clixml and Import-Clixml
 
         $arguments = @{
@@ -493,57 +561,23 @@ function Invoke-ThreadTop {
             $fileName = $PhoneFile.Name
 
             if ($WhatIf) {
-                Write-Host "Would try to copy $fileName to $DestinationFolderPath"
+                $OutputQueue.Enqueue("Would try to copy $fileName to $DestinationFolderPath")
                 $copied = $true
             }
             else {
-                # TODO This can fail with:
-                # Error Copying File or Folder
-                # The requested resource is in use.
-                #
-                # TODO ^ google this. what could cause this?
-                #
-                # Thread blocking issue:
-                # ======================
-                # Does this make that thread hang until the user clicks on that
-                # pop-up window???
-                # It seems it does! Thread3 was sitting on 50 processed files for
-                # long minutes. Another error meant another thread stalled. Yep,
-                # Thread6 is just sitting on 68 waiting for a click :/
-                # This is very bad.
-                # Maybe we need a global copy lock?
-                # Careful: if we have all the files missing that would render
-                # the script single-threaded!
-                # I've just assumed that the problem is that we try to copy 2 or
-                # more files on separate threads from the phone to the PC at the
-                # same time. This is just a theory. One that we can test though,
-                # so not a bad theory.
-                #
-                # Copy failed and a whole re-run would be needed to try copying
-                # that single file again issue:
-                # =============================
-                # Can we detect that there was a failure without CopyHere returning
-                # something sensible?
-                # Of course! If the file isn't in the destination folder we could
-                # retry.
-                # RetryCopyMaxAttempts = 5
-                # RetryWaitTimeMilliseconds = 100
-                Write-Host "Copying $fileName to $DestinationFolderPath..."
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
+                $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $fileName)
 
-                $destinationFolder.GetFolder.CopyHere($PhoneFile)
-
-                Start-Sleep -Milliseconds 500
-
-                $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $PhoneFile.Name)
-                while (!Test-Path $destinationFile) {
-                    $OutputQueue.Enqueue("Waiting for $destinationFile to get copied...")
+                $try = 1
+                do {
+                    if ($try -gt 1) {
+                        $OutputQueue.Enqueue("Copying $fileName to $DestinationFolderPath (try: $try)...")
+                    }
+                    ++$try
+                    $destinationFolder.GetFolder.CopyHere($PhoneFile)
                     Start-Sleep -Milliseconds 100
-                }
-                # TODO check the file is really in the destination
-                # retry if it isn't (see above)
-                # This way copied will really mean copied so also update the
-                # documentation
+                } while (!Test-Path $destinationFile)
+
                 $copied = $true
             }
         }
@@ -580,7 +614,7 @@ function Invoke-ThreadTop {
                     $StatusArray[$ThreadId].PhoneFileProcessed = $processed
                 }
                 else {
-                    $status = "Processing $($phoneFile.Name) on thread $ThreadId..."
+                    # $status = "Processing $($phoneFile.Name) on thread $ThreadId..."
 
                     $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
                         -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
@@ -656,6 +690,8 @@ else {
 if ($ThreadCount -eq 0) {
     throw "ThreadCount must be at least 1"
 }
+
+Ensure-Prerequisites $Choco $AutoHotkey
 
 $config = Get-Config $ConfigFile
 
@@ -781,6 +817,8 @@ if ($phoneFileCount -gt 0) {
 
             Start-Sleep -Milliseconds 100
 
+            Stop-RunspaceBlockerModalWindows $AutoHotkey
+
             ## See if we still have any busy runspaces. If not, exit the loop.
             $busyRunspaces = $runspaces | Where-Object { $_.InvocationStateInfo.State -ne 'Complete' }
         } while ($busyRunspaces)
@@ -808,9 +846,7 @@ if ($phoneFileCount -gt 0) {
         Write-Output "Elapsed time: $elapsed"
 
         Write-Output "Stop the $($runspaces.Length) thread(s)..."
-
-        $host.EnterNestedPrompt()
-
+        Stop-RunspaceBlockerModalWindows $AutoHotkey
         foreach ($runspace in $runspaces) {
             $runspace.Stop()
             $runspace.Dispose()
