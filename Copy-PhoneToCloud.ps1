@@ -782,7 +782,7 @@ if ($phoneFileCount -gt 0) {
             $null = $state.AddOrUpdate($key, $value, { param($key, $oldValue) $true} )
         }
         if ($plainHashtableState.Count -eq $state.Count) {
-            Write-Output "Loaded $($state.Count) items"
+            Write-Output "Loaded $($state.Count) entries"
         }
         else {
             throw "Failed to restore '$StateFile' ($($plainHashtableState.Count) != $($state.Count))"
@@ -880,7 +880,7 @@ if ($phoneFileCount -gt 0) {
     finally {
         Write-Output "Saving the state into $StateFile..."
         $state | Export-Clixml $StateFile
-        Write-Output "Done"
+        Write-Output "Saved $($state.Count) entries"
 
         $timing = Get-ElapsedAndRemainingTime -StartTime $startTime -ProcessedCount $totalProcessed -TotalCount $phoneFileCount
         $elapsed = $timing.ElapsedTime
