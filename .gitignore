@@ -1,3 +1,4 @@
+*.cptc
 *.txt
 *_config.ps1
 .gitsecret/keys/random_seed
