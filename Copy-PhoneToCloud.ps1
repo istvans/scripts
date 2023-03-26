@@ -613,7 +613,9 @@ function Invoke-ThreadTop {
                     throw "Processed a NULL phoneFile on thread $ThreadId..."
                 }
                 else {
+                    # Assumption: this Path is globally unique or at least unique per device.
                     $key = $phoneFile.Path
+
                     if (-Not $StartFromScratch -and $State.ContainsKey($key)) {
                         $status = "Skipped $($phoneFile.Name) on thread $ThreadId..."
                         ++$skipped
