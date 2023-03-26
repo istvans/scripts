@@ -864,7 +864,10 @@ if ($phoneFileCount -gt 0) {
 
         # Show the result.
         if ($totalProcessed -eq $phoneFileCount) {
-            if ($totalCopied -eq 0) {
+            if ($totalSkipped -eq $totalProcessed) {
+                Write-Output "All $phoneFileCount file(s) were found in the state file '$StateFile'. ✅"
+            }
+            elseif ($totalCopied -eq 0) {
                 Write-Output "All $phoneFileCount file(s) seem to be already synced. 🎉🎉🎉"
             }
             else {
