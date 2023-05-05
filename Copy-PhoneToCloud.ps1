@@ -165,6 +165,7 @@ param(
     [string]$StateFile = "state.cptc",
     [switch]$StartFromScratch = $false,
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
+    [switch]$LocalSource = $false,
     [switch]$OnlyCompareFileNames = $false,
     [switch]$WhatIf = $false
 )
@@ -379,6 +380,7 @@ function Invoke-ThreadTop {
         [bool]$StartFromScratch,
         [Array]$StatusArray,
         [uint32]$ThreadId,
+        [bool]$LocalSource,
         [ref]$KeepOnRunning
     )
 
@@ -396,11 +398,17 @@ function Invoke-ThreadTop {
             [string]$BeyondCompare,
             [string]$PhonePath,
             [System.__ComObject]$PhoneFile,
-            [string]$CloudFile
+            [string]$CloudFile,
+            [bool]$LocalSource
         )
 
-        $phoneFileMtpPath = Get-MtpPath $PhonePath $PhoneFile.Name
-        $arguments = "/silent /quickcompare `"$phoneFileMtpPath`" `"$CloudFile`""
+        if ($LocalSource) {
+            $phoneFilePath = $PhoneFile.Path
+        } else {
+            $phoneFilePath = Get-MtpPath $PhonePath $PhoneFile.Name
+        }
+
+        $arguments = "/silent /quickcompare `"$$phoneFilePath`" `"$CloudFile`""
         $process = Start-Process $BeyondCompare -WindowStyle Hidden -ArgumentList $arguments -PassThru -Wait
         $comparisonResult = $process.ExitCode
 
@@ -465,7 +473,8 @@ function Invoke-ThreadTop {
             [System.__ComObject]$PhoneFile,
             [string]$CloudFolderPath,
             [string]$BeyondCompare,
-            [bool]$OnlyCompareFileNames
+            [bool]$OnlyCompareFileNames,
+            [bool]$LocalSource
         )
 
         $originalFilename = $PhoneFile.Name
@@ -522,7 +531,14 @@ function Invoke-ThreadTop {
                     }
                 }
                 else {
-                    $result = Test-FilesAreIdentical $BeyondCompare $PhonePath $PhoneFile $cloudFile
+                    $arguments = @{
+                        BeyondCompare = $BeyondCompare
+                        PhonePath = $PhonePath
+                        PhoneFile = $PhoneFile
+                        CloudFile = $cloudFile
+                        LocalSource = $LocalSource
+                    }
+                    $result = Test-FilesAreIdentical @arguments
                 }
             }
         }
@@ -541,17 +557,19 @@ function Invoke-ThreadTop {
             [bool]$OnlyCompareFileNames,
             [bool]$WhatIf,
             [System.__ComObject]$Shell,
-            [System.Collections.Concurrent.ConcurrentQueue[String]]$DebugQueue
+            [System.Collections.Concurrent.ConcurrentQueue[String]]$DebugQueue,
+            [bool]$LocalSource
         )
 
-        $arguments = @{
+        $fileTestArguments = @{
             PhonePath = $PhonePath
             PhoneFile = $PhoneFile
             CloudFolderPath = $CloudFolderPath
             BeyondCompare = $BeyondCompare
-            OnlyCompareFileNames =$OnlyCompareFileNames
+            OnlyCompareFileNames = $OnlyCompareFileNames
+            LocalSource = $LocalSource
         }
-        if (Test-FileIsInCloud @arguments) {
+        if (Test-FileIsInCloud @fileTestArguments) {
             $copied = $false
         }
         else {
@@ -598,6 +616,7 @@ function Invoke-ThreadTop {
             [bool]$StartFromScratch,
             [Array]$StatusArray,
             [uint32]$ThreadId,
+            [bool]$LocalSource,
             [ref]$KeepOnRunning
         )
 
@@ -621,10 +640,19 @@ function Invoke-ThreadTop {
                         ++$skipped
                     }
                     else {
-                        $wasCopied = Copy-IfMissing -PhonePath $PhonePath -PhoneFile $phoneFile `
-                            -CloudFolderPath $CloudFolderPath -DestinationFolderPath $DestinationFolderPath `
-                            -BeyondCompare $BeyondCompare -OnlyCompareFileNames $OnlyCompareFileNames `
-                            -WhatIf $WhatIf -Shell $shell -DebugQueue $DebugQueue
+                        $copyIfMissingArguments = @{
+                            PhonePath = $PhonePath
+                            PhoneFile = $phoneFile
+                            CloudFolderPath = $CloudFolderPath
+                            DestinationFolderPath = $DestinationFolderPath
+                            BeyondCompare = $BeyondCompare
+                            OnlyCompareFileNames = $OnlyCompareFileNames
+                            WhatIf = $WhatIf
+                            Shell = $shell
+                            DebugQueue = $DebugQueue
+                            LocalSource = $LocalSource
+                        }
+                        $wasCopied = Copy-IfMissing @copyIfMissingArguments
                         if ($wasCopied) {
                             ++$copied
                         }
@@ -664,6 +692,7 @@ function Invoke-ThreadTop {
         StartFromScratch = $StartFromScratch
         StatusArray = $StatusArray
         ThreadId = $ThreadId
+        LocalSource = $LocalSource
         KeepOnRunning = $KeepOnRunning
     }
     Invoke-ProcessLoop @arguments
@@ -811,6 +840,7 @@ if ($phoneFileCount -gt 0) {
         AddParameter("State", $state).
         AddParameter("StartFromScratch", $StartFromScratch).
         AddParameter("ThreadId", $threadId).
+        AddParameter("LocalSource", $LocalSource).
         AddParameter("KeepOnRunning", [ref]$keepOnRunning).BeginInvoke()
     }
 
