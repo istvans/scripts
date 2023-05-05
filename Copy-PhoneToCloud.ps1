@@ -408,7 +408,7 @@ function Invoke-ThreadTop {
             $phoneFilePath = Get-MtpPath $PhonePath $PhoneFile.Name
         }
 
-        $arguments = "/silent /quickcompare `"$$phoneFilePath`" `"$CloudFile`""
+        $arguments = "/silent /quickcompare `"$phoneFilePath`" `"$CloudFile`""
         $process = Start-Process $BeyondCompare -WindowStyle Hidden -ArgumentList $arguments -PassThru -Wait
         $comparisonResult = $process.ExitCode
 
@@ -422,8 +422,7 @@ function Invoke-ThreadTop {
                 $true
             }
             { $_ -eq $ERROR_CODE } {
-                Write-Error "$BeyondCompare $arguments return code: $comparisonResult"
-                $true
+                throw "$BeyondCompare $arguments FAILED with return code: $comparisonResult"
             }
             default {
                 Write-Warning "Mismatch? => $BeyondCompare $arguments return code: $comparisonResult"
@@ -884,6 +883,15 @@ if ($phoneFileCount -gt 0) {
             Start-Sleep -Milliseconds 100
 
             Stop-RunspaceBlockerModalWindows $AutoHotkey
+
+            # I there was any error in any runspace, error and skip further processing
+            foreach ($runspace in $runspaces) {
+                if ($runspaces.InvocationStateInfo.State -eq [System.Management.Automation.PSInvocationState]::Failed) {
+                    $keepOnRunning = $false
+                    Start-Sleep -Milliseconds 100
+                    throw $runspaces.InvocationStateInfo.Reason
+                }
+            }
 
             ## See if we still have any busy runspaces. If not, exit the loop.
             $busyRunspaces = $runspaces | Where-Object { $_.InvocationStateInfo.State -ne 'Complete' }
