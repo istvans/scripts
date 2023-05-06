@@ -1,4 +1,5 @@
 # TODO update the docs
+# TODO rename the script to Transfer-MissingFiles.ps1
 <#
 .SYNOPSIS
   Ensure the phone files are uploaded to "the cloud".
@@ -153,19 +154,20 @@
 #>
 param(
     [Parameter(Mandatory)]
-    [string]$PhoneName,
-    [string]$PhoneFolderPath = "<configured>",
-    [string]$CloudFolderPath = "<configured>",
+    [string]$PhoneName,  # TODO rename to SourceName
+    [string]$PhoneFolderPath = "<configured>",  # TODO rename to SourceFolderPath
+    [string]$CloudFolderPath = "<configured>",  # TODO rename to something sensible, the script does not need to transfer files to the cloud, that's just an option
     [string]$DestinationFolderPath = "<configured>",
     [string]$Filter = ".(jpg|jpeg|mp4)$",
     [string]$Choco = "choco",
     [string]$AutoHotkey = "AutoHotkey.exe",
     [string]$BeyondCompare = "BComp.com",
-    [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",
+    [string]$ConfigFile = "copy_phone_to_cloud_config.ps1",  # TODO rename to something sensible
     [string]$StateFile = "state.cptc",
     [switch]$StartFromScratch = $false,
     [uint32]$ThreadCount = $(Get-ComputerInfo -Property CsProcessors).CsProcessors.NumberOfCores,
     [switch]$LocalSource = $false,
+    [switch]$Move = $false,
     [switch]$OnlyCompareFileNames = $false,
     [switch]$WhatIf = $false
 )
@@ -318,8 +320,9 @@ function Get-TotalStats {
 
     $totalProcessed = $StatusArray | ForEach-Object { $_.PhoneFileProcessed } | Measure-Object -Sum | ForEach-Object Sum
     $totalCopied = $StatusArray | ForEach-Object { $_.PhoneFileCopied } | Measure-Object -Sum | ForEach-Object Sum
+    $totalMoved = $StatusArray | ForEach-Object { $_.PhoneFileMoved } | Measure-Object -Sum | ForEach-Object Sum
     $totalSkipped = $StatusArray | ForEach-Object { $_.PhoneFileSkipped } | Measure-Object -Sum | ForEach-Object Sum
-    $totalProcessed, $totalCopied, $totalSkipped
+    $totalProcessed, $totalCopied, $totalMoved, $totalSkipped
 }
 
 
@@ -330,7 +333,7 @@ function Write-AllProgress {
         [uint32]$Goal
     )
 
-    $totalProcessed, $totalCopied, $totalSkipped = Get-TotalStats $StatusArray
+    $totalProcessed, $totalCopied, $totalMoved, $totalSkipped = Get-TotalStats $StatusArray
 
     $timing = Get-ElapsedAndRemainingTime -StartTime $StartTime -ProcessedCount $totalProcessed -TotalCount $Goal
     $elapsed = $timing.ElapsedTime
@@ -339,7 +342,7 @@ function Write-AllProgress {
     $parentProgressId = 0
     $percent = [uint32]($totalProcessed * 100 / $Goal)
     Write-Progress -Id $parentProgressId -Activity "Total:" `
-        -Status "Copied: $totalCopied Skipped: $totalSkipped Processed: $totalProcessed/$Goal Elapsed: $elapsed Left: $remaining" `
+        -Status "Copied: $totalCopied Moved: $totalMoved Skipped: $totalSkipped Processed: $totalProcessed/$Goal Elapsed: $elapsed Left: $remaining" `
         -PercentComplete $percent
 
     # Arbitrary limit to prevent too many progress bars that can't be properly
@@ -350,15 +353,41 @@ function Write-AllProgress {
             $runspaceStatus = $StatusArray[$threadId]
             $processed = $runspaceStatus.PhoneFileProcessed
             $copied = $runspaceStatus.PhoneFileCopied
+            $moved = $runspaceStatus.PhoneFileMoved
             $skipped = $runspaceStatus.PhoneFileSkipped
             $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
             $threadPercent = [uint32]($processed * 100 / $Goal)  # will never reach 100, but that's fine
             Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
                 -Activity "Thread${threadProgressId}:" `
-                -Status "Copied: $copied Skipped: $skipped Processed: $processed/$Goal" `
+                -Status "Copied: $copied Moved: $moved Skipped: $skipped Processed: $processed/$Goal" `
                 -PercentComplete $threadPercent
         }
     }
+}
+
+
+function Write-Results {
+    param(
+        [uint32]$TotalCopied,
+        [uint32]$TotalMoved,
+        [uint32]$TotalSkipped,
+        [uint32]$SourceFileCount,
+        [string]$DestinationFolderPath,
+        [bool]$Move,
+        [bool]$WhatIf
+    )
+
+    $action = if ($WhatIf) { "would have been (-WhatIf)" } else { "were" }
+
+    if ($Move) {
+        $transferCount = $TotalMoved
+        $transferType = "moved"
+    } else {
+        $transferCount = $TotalCopied
+        $transferType = "copied"
+    }
+
+    Write-Output "$transferCount/$SourceFileCount $action $transferType to '$DestinationFolderPath' (skipped: $TotalSkipped)"
 }
 
 
@@ -381,6 +410,7 @@ function Invoke-ThreadTop {
         [Array]$StatusArray,
         [uint32]$ThreadId,
         [bool]$LocalSource,
+        [bool]$Move,
         [ref]$KeepOnRunning
     )
 
@@ -546,7 +576,7 @@ function Invoke-ThreadTop {
     }
 
 
-    function Copy-IfMissing {
+    function Transfer-IfMissing {
         param(
             [string]$PhonePath,
             [System.__ComObject]$PhoneFile,
@@ -557,8 +587,11 @@ function Invoke-ThreadTop {
             [bool]$WhatIf,
             [System.__ComObject]$Shell,
             [System.Collections.Concurrent.ConcurrentQueue[String]]$DebugQueue,
-            [bool]$LocalSource
+            [bool]$LocalSource,
+            [bool]$Move
         )
+
+        $sourceFileName = $PhoneFile.Name
 
         $fileTestArguments = @{
             PhonePath = $PhonePath
@@ -569,35 +602,48 @@ function Invoke-ThreadTop {
             LocalSource = $LocalSource
         }
         if (Test-FileIsInCloud @fileTestArguments) {
-            $copied = $false
+            if ($Move) {
+                $transferred = $true
+                if ($WhatIf) {
+                    $DebugQueue.Enqueue("Would have (-WhatIf) deleted $sourceFileName as it's in '$DestinationFolderPath'")
+                } else {
+                    $PhoneFile.InvokeVerbEx("delete")  # TODO this can prompt for confirmation for permanent deletion, autohotkey it
+                }
+            } else {
+                $transferred = $false
+            }
         }
         else {
-            $fileName = $PhoneFile.Name
-
             if ($WhatIf) {
-                $DebugQueue.Enqueue("Would try to copy $fileName to $DestinationFolderPath")
-                $copied = $true
+                $transfer = if ($Move) { "move" } else { "copy" }
+                $DebugQueue.Enqueue("Would (-WhatIf) try to $transfer $sourceFileName to '$DestinationFolderPath'")
+                $transferred = $true
             }
             else {
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
-                $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $fileName)
+                $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $sourceFileName)
 
                 $retryCount = 0
                 do {
                     if ($retryCount -gt 0) {
                         Start-Sleep -Milliseconds 100
-                        $DebugQueue.Enqueue("Copying $fileName to $DestinationFolderPath (retry: $retryCount)...")
+                        $transfer = if ($Move) { "Move" } else { "Copy" }
+                        $DebugQueue.Enqueue("$transfer $sourceFileName to '$DestinationFolderPath' (retry: $retryCount)...")
                     }
                     ++$retryCount
 
-                    $destinationFolder.GetFolder.CopyHere($PhoneFile)
+                    if ($Move) {
+                        $destinationFolder.GetFolder.MoveHere($PhoneFile)
+                    } else {
+                        $destinationFolder.GetFolder.CopyHere($PhoneFile)
+                    }
                 } while (-Not (Test-Path $destinationFile))
 
-                $copied = $true
+                $transferred = $true
             }
         }
 
-        return $copied
+        return $transferred
     }
 
 
@@ -616,6 +662,7 @@ function Invoke-ThreadTop {
             [Array]$StatusArray,
             [uint32]$ThreadId,
             [bool]$LocalSource,
+            [bool]$Move,
             [ref]$KeepOnRunning
         )
 
@@ -623,6 +670,7 @@ function Invoke-ThreadTop {
 
         $processed = 0
         $copied = 0
+        $moved = 0
         $skipped = 0
         $phoneFile = $null
         while ($KeepOnRunning.Value) {
@@ -639,7 +687,7 @@ function Invoke-ThreadTop {
                         ++$skipped
                     }
                     else {
-                        $copyIfMissingArguments = @{
+                        $transferIfMissingArguments = @{
                             PhonePath = $PhonePath
                             PhoneFile = $phoneFile
                             CloudFolderPath = $CloudFolderPath
@@ -650,10 +698,15 @@ function Invoke-ThreadTop {
                             Shell = $shell
                             DebugQueue = $DebugQueue
                             LocalSource = $LocalSource
+                            Move = $Move
                         }
-                        $wasCopied = Copy-IfMissing @copyIfMissingArguments
-                        if ($wasCopied) {
-                            ++$copied
+                        $wasTransferred = Transfer-IfMissing @transferIfMissingArguments
+                        if ($wasTransferred) {
+                            if ($Move) {
+                                ++$moved
+                            } else {
+                                ++$copied
+                            }
                         }
 
                         $status = "Processed $($phoneFile.Name) on thread $ThreadId..."
@@ -665,6 +718,7 @@ function Invoke-ThreadTop {
                     $runspaceStatus = [ref]$StatusArray[$ThreadId]
                     $runspaceStatus.Value.PhoneFileProcessed = $processed
                     $runspaceStatus.Value.PhoneFileCopied = $copied
+                    $runspaceStatus.Value.PhoneFileMoved = $moved
                     $runspaceStatus.Value.PhoneFileSkipped = $skipped
                 }
             }
@@ -692,6 +746,7 @@ function Invoke-ThreadTop {
         StatusArray = $StatusArray
         ThreadId = $ThreadId
         LocalSource = $LocalSource
+        Move = $Move
         KeepOnRunning = $KeepOnRunning
     }
     Invoke-ProcessLoop @arguments
@@ -705,11 +760,13 @@ function Invoke-ThreadTop {
 class RunspaceStatus {
     [uint32]$PhoneFileProcessed
     [uint32]$PhoneFileCopied
+    [uint32]$PhoneFileMoved
     [uint32]$PhoneFileSkipped
 
     RunspaceStatus() {
         $this.PhoneFileProcessed = 0
         $this.PhoneFileCopied = 0
+        $this.PhoneFileMoved = 0
         $this.PhoneFileSkipped = 0
     }
 }
@@ -786,8 +843,9 @@ $phonePath = "$PhoneName\$PhoneFolderPath"
 Write-Output "Processing path: $phonePath"
 Write-Output "Looking for files in: $CloudFolderPath"
 if ($phoneFileCount -gt 0) {
-    $action = if ($WhatIf) { "NOT copy (dry-run)" } else { "copy" }
-    Write-Output "Will $action missing files to: $DestinationFolderPath"
+    $transferType = if ($Move) { "move" } else { "copy" }
+    $action = if ($WhatIf) { "NOT (-WhatIf)" } else { "" }
+    Write-Output "Will $action $transferType missing files to: $DestinationFolderPath"
 
     if ($ThreadCount -eq 1) {
         Write-Output "Running on a single thread..."
@@ -840,6 +898,7 @@ if ($phoneFileCount -gt 0) {
         AddParameter("StartFromScratch", $StartFromScratch).
         AddParameter("ThreadId", $threadId).
         AddParameter("LocalSource", $LocalSource).
+        AddParameter("Move", $Move).
         AddParameter("KeepOnRunning", [ref]$keepOnRunning).BeginInvoke()
     }
 
@@ -898,7 +957,7 @@ if ($phoneFileCount -gt 0) {
         } while ($busyRunspaces)
 
         # Make sure we've got the final numbers
-        $totalProcessed, $totalCopied, $totalSkipped = Get-TotalStats $runspaceStatuses
+        $totalProcessed, $totalCopied, $totalMoved, $totalSkipped = Get-TotalStats $runspaceStatuses
 
         # Show the result.
         if ($totalProcessed -eq $phoneFileCount) {
@@ -909,19 +968,39 @@ if ($phoneFileCount -gt 0) {
                 Write-Output "All $phoneFileCount file(s) seem to be already synced. 🎉🎉🎉"
             }
             else {
-                $action = if ($WhatIf) { "would have been" } else { "were" }
-                Write-Output "$totalCopied/$phoneFileCount item(s) $action copied to" `
-                    " $DestinationFolderPath (skipped: $totalSkipped)"
+                $writeResultsArguments = @{
+                    TotalCopied = $totalCopied
+                    TotalMoved = $totalMoved
+                    TotalSkipped = $totalSkipped
+                    SourceFileCount = $phoneFileCount
+                    DestinationFolderPath = $DestinationFolderPath
+                    Move = $Move
+                    WhatIf = $WhatIf
+                }
+                Write-Results @writeResultsArguments
             }
         }
         else {
-            Write-Output "Processed $totalProcessed from $phoneFileCount (skipped: $totalSkipped)"
+            $writeResultsArguments = @{
+                TotalCopied = $totalCopied
+                TotalMoved = $totalMoved
+                TotalSkipped = $totalSkipped
+                SourceFileCount = $phoneFileCount
+                DestinationFolderPath = $DestinationFolderPath
+                Move = $Move
+                WhatIf = $WhatIf
+            }
+            Write-Results @writeResultsArguments
         }
     }
     finally {
-        Write-Output "Saving the state into $StateFile..."
-        $state | Export-Clixml $StateFile
-        Write-Output "Saved $($state.Count) entries"
+        if ($WhatIf) {
+            Write-Output "Skipped saving the state into $StateFile (-WhatIf)"
+        } else {
+            Write-Output "Saving the state into $StateFile..."
+            $state | Export-Clixml $StateFile
+            Write-Output "Saved $($state.Count) entries"
+        }
 
         $timing = Get-ElapsedAndRemainingTime -StartTime $startTime -ProcessedCount $totalProcessed -TotalCount $phoneFileCount
         $elapsed = $timing.ElapsedTime
