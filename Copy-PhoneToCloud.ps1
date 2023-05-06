@@ -601,12 +601,12 @@ function Invoke-ThreadTop {
         }
         if (Test-FileIsInCloud @fileTestArguments) {
             if ($Move) {
-                $transferred = $true
                 if ($WhatIf) {
                     $DebugQueue.Enqueue("Would have (-WhatIf) deleted $sourceFileName as it's in '$DestinationFolderPath'")
                 } else {
                     $PhoneFile.InvokeVerbEx("delete")  # TODO this can prompt for confirmation for permanent deletion, autohotkey it
                 }
+                $transferred = $true
             } else {
                 $transferred = $false
             }
@@ -941,7 +941,7 @@ if ($phoneFileCount -gt 0) {
 
             Stop-RunspaceBlockerModalWindows $AutoHotkey
 
-            # I there was any error in any runspace, error and skip further processing
+            # If there was any error in any runspace, crash
             foreach ($runspace in $runspaces) {
                 if ($runspaces.InvocationStateInfo.State -eq [System.Management.Automation.PSInvocationState]::Failed) {
                     $keepOnRunning = $false
@@ -950,7 +950,7 @@ if ($phoneFileCount -gt 0) {
                 }
             }
 
-            ## See if we still have any busy runspaces. If not, exit the loop.
+            # See if we still have any busy runspaces. If not, exit the loop.
             $busyRunspaces = $runspaces | Where-Object { $_.InvocationStateInfo.State -ne 'Complete' }
         } while ($busyRunspaces)
 
