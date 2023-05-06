@@ -348,20 +348,18 @@ function Write-AllProgress {
     # Arbitrary limit to prevent too many progress bars that can't be properly
     # displayed, at least on relatively small screens.
     $limit = 45
-    if ($StatusArray.Length -le $limit) {
-        for ($threadId = 0; $threadId -lt $StatusArray.Length; ++$threadId) {
-            $runspaceStatus = $StatusArray[$threadId]
-            $processed = $runspaceStatus.PhoneFileProcessed
-            $copied = $runspaceStatus.PhoneFileCopied
-            $moved = $runspaceStatus.PhoneFileMoved
-            $skipped = $runspaceStatus.PhoneFileSkipped
-            $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
-            $threadPercent = [uint32]($processed * 100 / $Goal)  # will never reach 100, but that's fine
-            Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
-                -Activity "Thread${threadProgressId}:" `
-                -Status "Copied: $copied Moved: $moved Skipped: $skipped Processed: $processed/$Goal" `
-                -PercentComplete $threadPercent
-        }
+    for ($threadId = 0; ($threadId -lt $StatusArray.Length) -and ($threadId -lt $limit); ++$threadId) {
+        $runspaceStatus = $StatusArray[$threadId]
+        $processed = $runspaceStatus.PhoneFileProcessed
+        $copied = $runspaceStatus.PhoneFileCopied
+        $moved = $runspaceStatus.PhoneFileMoved
+        $skipped = $runspaceStatus.PhoneFileSkipped
+        $threadProgressId = $threadId + 1  # the ParentId can't be the same as the Id
+        $threadPercent = [uint32]($processed * 100 / $Goal)  # will never reach 100, but that's fine
+        Write-Progress -ParentId $parentProgressId -Id $threadProgressId `
+            -Activity "Thread${threadProgressId}:" `
+            -Status "Copied: $copied Moved: $moved Skipped: $skipped Processed: $processed/$Goal" `
+            -PercentComplete $threadPercent
     }
 }
 
