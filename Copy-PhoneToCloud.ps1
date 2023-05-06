@@ -238,6 +238,9 @@ function Stop-RunspaceBlockerModalWindows
 
     $modalWindowKiller = [IO.Path]::Combine($PSScriptRoot, "close_annoying_modal_error_popups.ahk")
     & $AutoHotkey $modalWindowKiller
+
+    $permanentDeleteConfirmer = [IO.Path]::Combine($PSScriptRoot, "confirm_permanent_delete.ahk")
+    & $AutoHotkey $permanentDeleteConfirmer
 }
 
 
@@ -604,7 +607,7 @@ function Invoke-ThreadTop {
                 if ($WhatIf) {
                     $DebugQueue.Enqueue("Would have (-WhatIf) deleted $sourceFileName as it's in '$DestinationFolderPath'")
                 } else {
-                    $PhoneFile.InvokeVerbEx("delete")  # TODO this can prompt for confirmation for permanent deletion, autohotkey it
+                    $PhoneFile.InvokeVerbEx("delete")
                 }
                 $transferred = $true
             } else {
