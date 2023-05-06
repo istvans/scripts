@@ -14,7 +14,7 @@ function Get-ElapsedAndRemainingTime {
     $elapsedTimeSpan =  [TimeSpan]::fromseconds($elapsedSeconds)
     $elapsedTime = ($TimeFormat -f $elapsedTimeSpan)
 
-    if ($Count -eq 0) {
+    if ($TotalCount -eq 0) {
         $averageElapsedSecondsPerThing = [double]::PositiveInfinity
     }
     else {
