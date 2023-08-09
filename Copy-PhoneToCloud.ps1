@@ -607,7 +607,9 @@ function Invoke-ThreadTop {
                 if ($WhatIf) {
                     $DebugQueue.Enqueue("Would have (-WhatIf) deleted $sourceFileName as it's in '$DestinationFolderPath'")
                 } else {
+                    $DebugQueue.Enqueue("Try to delete $sourceFileName as it's in '$DestinationFolderPath'")
                     $PhoneFile.InvokeVerbEx("delete")
+                    $DebugQueue.Enqueue("Deleted $sourceFileName")
                 }
                 $transferred = $true
             } else {
@@ -623,6 +625,11 @@ function Invoke-ThreadTop {
             else {
                 $destinationFolder = $Shell.Namespace($DestinationFolderPath).self
                 $destinationFile = [IO.Path]::Combine($DestinationFolderPath, $sourceFileName)
+
+                # TODO the files are different. let's say Test-Path $destinationFile returns $true
+                # instead of trying to move/copy from the source to overwrite it, let's just log the found difference
+                # and carry on. this way we could avoid the override pop-ups, but this manual comparison
+                # over many many files would be annoying... hm
 
                 $retryCount = 0
                 do {
@@ -965,8 +972,9 @@ if ($phoneFileCount -gt 0) {
             if ($totalSkipped -eq $totalProcessed) {
                 Write-Output "All $phoneFileCount file(s) were found in the state file '$StateFile'. ✅"
             }
-            elseif ($totalCopied -eq 0) {
-                Write-Output "All $phoneFileCount file(s) seem to be already synced. 🎉🎉🎉"
+            elseif ((-not $Move) -and ($totalCopied -eq 0)) {
+                $plural = if ($phoneFileCount -gt 1) { "s" } else { "" }
+                Write-Output "Found $phoneFileCount, identical file$plural under '$DestinationFolderPath'. 🎉🎉🎉"
             }
             else {
                 $writeResultsArguments = @{
